@@ -133,9 +133,16 @@ pub struct Ledger {
     pub by_model: BTreeMap<String, Vec<f64>>,
     /// Running total of daily credits, aligned with `days`.
     pub cumulative: Vec<f64>,
+    /// Daily credits, one cell per day from the first record to today.
+    pub calendar: (jiff::civil::Date, Vec<f64>),
+    /// Credits per hour, the last `HOURLY_ROWS` days, newest last.
+    pub hourly: Vec<(String, [f64; 24])>,
     pub models_rows: Vec<ModelRow>,
     pub sessions: Vec<SessionRow>,
 }
+
+/// Rows in the hour-by-day heatmap.
+const HOURLY_ROWS: usize = 14;
 
 impl Ledger {
     pub fn build(records: &[UsageRecord], billing: &Billing) -> Self {
@@ -198,6 +205,61 @@ impl Ledger {
             })
             .collect();
         models_rows.sort_by(|a, b| b.totals.credits.total_cmp(&a.totals.credits));
+        // The calendar wants a count for every day, records or not.
+        let zone = jiff::tz::TimeZone::system();
+        let mut daily_total: BTreeMap<String, f64> = BTreeMap::new();
+        for (key, column) in &source_daily.series {
+            for (ix, value) in column.iter().enumerate() {
+                *daily_total.entry(source_daily.days[ix].clone()).or_default() += value;
+            }
+            let _ = key;
+        }
+        let calendar = match source_daily.days.first() {
+            Some(first) => {
+                let start: jiff::civil::Date = first.parse().expect("a day key parses");
+                let today = jiff::Zoned::now().date();
+                let span = today
+                    .since(start)
+                    .expect("the first day is not in the future");
+                let count = span.get_days() as usize + 1;
+                let mut counts = vec![0.0; count];
+                for (day, value) in &daily_total {
+                    if let Ok(date) = day.parse::<jiff::civil::Date>() {
+                        if let Ok(offset) = date.since(start) {
+                            let ix = offset.get_days() as usize;
+                            if ix < count {
+                                counts[ix] = *value;
+                            }
+                        }
+                    }
+                }
+                (start, counts)
+            }
+            None => (jiff::Zoned::now().date(), vec![0.0]),
+        };
+        // The hour-by-day grid: credits in each hour of the last two weeks.
+        let mut hourly: BTreeMap<String, [f64; 24]> = BTreeMap::new();
+        let mut hourly_days: Vec<String> = Vec::new();
+        for back in (0..HOURLY_ROWS).rev() {
+            let day = (jiff::Zoned::now() - jiff::SignedDuration::from_hours(24 * back as i64))
+                .strftime("%Y-%m-%d")
+                .to_string();
+            hourly.entry(day.clone()).or_insert([0.0; 24]);
+            hourly_days.push(day);
+        }
+        for rec in records {
+            let day = day_of(rec.ts_ms);
+            if let Some(row) = hourly.get_mut(&day) {
+                if let Ok(zoned) = jiff::Timestamp::from_millisecond(rec.ts_ms) {
+                    let hour = zoned.to_zoned(zone.clone()).hour() as usize;
+                    row[hour] += billing.credits.credits(rec);
+                }
+            }
+        }
+        let hourly: Vec<(String, [f64; 24])> = hourly_days
+            .into_iter()
+            .filter_map(|day| hourly.remove(&day).map(|row| (day, row)))
+            .collect();
         let mut sessions = sessions(records, billing);
         sessions.truncate(200);
         Self {
@@ -208,6 +270,8 @@ impl Ledger {
             by_source: source_daily.series,
             by_model: model_daily.series,
             cumulative,
+            calendar,
+            hourly,
             models_rows,
             sessions,
         }

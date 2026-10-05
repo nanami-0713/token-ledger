@@ -1,4 +1,4 @@
-use ely_gpui_component::charts::{AreaChart, LineChart, Series};
+use ely_gpui_component::charts::{AreaChart, BarChart, CalendarHeatmap, HeatmapChart, LineChart, Series};
 use ely_gpui_component::data_display::{KpiCard, Statistic};
 use ely_gpui_component::theme::ActiveTheme;
 use gpui::{Context, IntoElement, ParentElement, Styled, Window, div, px};
@@ -69,6 +69,39 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
                     .format(|value| format!("{value:.0}")),
             ),
         ))
+        .child(section(
+            "Credits per day, a tile a day",
+            theme.colors.fg_muted,
+            div().w(px(980.)).child(
+                CalendarHeatmap::new("calendar", ledger.calendar.0, ledger.calendar.1.clone())
+                    .format(|value| format!("{value:.0} credits")),
+            ),
+        ))
+        .child(section(
+            "When the credits burn: the last two weeks, hour by hour",
+            theme.colors.fg_muted,
+            div().w(px(980.)).child(hourly_chart(ledger)),
+        ))
+        .child(section(
+            "Where the tokens go",
+            theme.colors.fg_muted,
+            div().w(px(680.)).child(
+                BarChart::new(
+                    "token-mix",
+                    ["Cache reads", "Fresh input", "Output"],
+                )
+                .series(Series::new(
+                    "Tokens",
+                    vec![
+                        ledger.totals.cache_read as f64,
+                        ledger.totals.input_net as f64,
+                        ledger.totals.output as f64,
+                    ],
+                ))
+                .horizontal()
+                .format(|value| human_tokens(value as u64)),
+            ),
+        ))
         .child(
             div()
                 .text_size(gpui::rems(0.8))
@@ -106,6 +139,19 @@ fn by_source_chart(ledger: &crate::core::aggregate::Ledger) -> impl IntoElement 
         }
     }
     chart.stacked().format(|value| format!("{value:.0}"))
+}
+
+/// Fourteen rows, one a day, twenty-four columns, one an hour: when the
+/// machine actually burns its quota. Rows without data stay as empty grids
+/// rather than panicking the chart.
+fn hourly_chart(ledger: &crate::core::aggregate::Ledger) -> impl IntoElement {
+    let hours: Vec<String> = (0..24).map(|hour| format!("{hour:02}")).collect();
+    let mut chart = HeatmapChart::new("hourly", hours);
+    for (day, row) in &ledger.hourly {
+        let label = day.strip_prefix("20").unwrap_or(day).to_string();
+        chart = chart.row(label, row.iter().copied());
+    }
+    chart.format(|value| format!("{value:.0} credits"))
 }
 
 fn section(title: &str, muted: gpui::Hsla, chart: gpui::Div) -> impl IntoElement {
