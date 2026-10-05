@@ -147,6 +147,10 @@ pub struct ModelRow {
 #[derive(Debug, Clone, Default)]
 pub struct Ledger {
     pub totals: Totals,
+    /// Tokens are the ledger's primary unit; money converted from them by
+    /// price card follows, and plan credits stay an auxiliary view.
+    pub today_tokens: f64,
+    pub week_tokens: f64,
     pub today_credits: f64,
     pub week_credits: f64,
     pub days: Vec<String>,
@@ -180,18 +184,25 @@ impl Ledger {
         let today = jiff::Zoned::now().strftime("%Y-%m-%d").to_string();
         let today_ms = jiff::Zoned::now().timestamp().as_millisecond();
         let (mut today_credits, mut week_credits) = (0.0, 0.0);
+        let (mut today_tokens, mut week_tokens) = (0.0, 0.0);
+        let tokens_of = |rec: &UsageRecord| {
+            (rec.input_net + rec.cache_read + rec.output) as f64
+        };
         for rec in records {
             totals.add(rec, billing);
             let credits = billing.credits.credits(rec);
+            let tokens = tokens_of(rec);
             if day_of(rec.ts_ms) == today {
                 today_credits += credits;
+                today_tokens += tokens;
             }
             if today_ms - rec.ts_ms <= 7 * 24 * 3600 * 1000 {
                 week_credits += credits;
+                week_tokens += tokens;
             }
         }
-        let source_daily = Daily::build(records, |rec| rec.source.clone(), "credits", billing);
-        let model_daily = Daily::build(records, |rec| rec.model_key.clone(), "credits", billing);
+        let source_daily = Daily::build(records, |rec| rec.source.clone(), "tokens", billing);
+        let model_daily = Daily::build(records, |rec| rec.model_key.clone(), "tokens", billing);
         let mut cumulative = vec![0.0; source_daily.days.len()];
         for column in source_daily.series.values() {
             for (ix, value) in column.iter().enumerate() {
@@ -273,7 +284,7 @@ impl Ledger {
             if let Some(row) = hourly.get_mut(&day) {
                 if let Ok(zoned) = jiff::Timestamp::from_millisecond(rec.ts_ms) {
                     let hour = zoned.to_zoned(zone.clone()).hour() as usize;
-                    row[hour] += billing.credits.credits(rec);
+                    row[hour] += tokens_of(rec);
                 }
             }
         }
@@ -312,6 +323,8 @@ impl Ledger {
         sessions.truncate(200);
         Self {
             totals,
+            today_tokens,
+            week_tokens,
             today_credits,
             week_credits,
             days: source_daily.days,

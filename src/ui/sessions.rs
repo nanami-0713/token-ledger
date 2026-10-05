@@ -31,11 +31,11 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
                     Cell::Text(session.models.join(", ").into()),
                     Cell::Number(session.totals.requests as f64),
                     Cell::Number(tokens as f64),
-                    Cell::Number(session.totals.credits),
                     match session.totals.cost_cny {
                         Some(cny) => Cell::Number(cny),
                         None => Cell::from(""),
                     },
+                    Cell::Number(session.totals.credits),
                     match session.tps() {
                         Some(tps) => Cell::Number(tps),
                         None => Cell::from(""),
@@ -70,8 +70,8 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
                     Column::new("models", "Models").width(rems(16.)),
                     Column::new("requests", "Req").width(rems(6.)).end(),
                     Column::new("tokens", "Tokens").width(rems(10.)).end(),
+                    Column::new("cost", "¥ list").width(rems(9.)).end(),
                     Column::new("credits", "Credits").width(rems(9.)).end(),
-                    Column::new("cost", "\u{a5} list").width(rems(9.)).end(),
                     Column::new("tps", "Tok/s").width(rems(7.)).end(),
                     Column::new("first", "First seen").width(rems(10.)),
                 ],

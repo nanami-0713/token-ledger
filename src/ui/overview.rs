@@ -24,26 +24,32 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
                 .gap_4()
                 .child(
                     KpiCard::new(
-                        Statistic::new("kpi-today", "Today (credits)", ledger.today_credits)
+                        Statistic::new("kpi-today", "Today · tokens", ledger.today_tokens)
                             .decimals(0),
                     )
                     .icon(ely_gpui_component::primitives::IconName::Zap)
-                    .caption("plan credits today — the GLM Coding Plan quota unit, every GUI together"),
+                    .caption("every model call today, every GUI together"),
                 )
                 .child(
                     KpiCard::new(
-                        Statistic::new("kpi-week", "Last 7 days", ledger.week_credits).decimals(0),
+                        Statistic::new("kpi-week", "Last 7 days · tokens", ledger.week_tokens)
+                            .decimals(0),
                     )
                     .icon(ely_gpui_component::primitives::IconName::Calendar)
                     .caption("one window, all sources"),
                 )
                 .child(
                     KpiCard::new(
-                        Statistic::new("kpi-requests", "Requests", ledger.totals.requests as f64)
-                            .decimals(0),
+                        Statistic::new(
+                            "kpi-cost",
+                            "API list price",
+                            ledger.totals.cost_cny.unwrap_or(0.0),
+                        )
+                        .decimals(0)
+                        .prefix("¥"),
                     )
-                    .icon(ely_gpui_component::primitives::IconName::Activity)
-                    .caption("model calls on this machine"),
+                    .icon(ely_gpui_component::primitives::IconName::Wallet)
+                    .caption("tokens × per-model price cards, priced models only"),
                 )
                 .child(
                     KpiCard::new(
@@ -60,6 +66,18 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
                 .flex()
                 .flex_wrap()
                 .gap_4()
+                .child(
+                    KpiCard::new(
+                        Statistic::new(
+                            "kpi-credits",
+                            "Plan credits today",
+                            ledger.today_credits,
+                        )
+                        .decimals(0),
+                    )
+                    .icon(ely_gpui_component::primitives::IconName::Gauge)
+                    .caption("GLM Coding Plan only — one provider's quota unit, an auxiliary view"),
+                )
                 .child(
                     KpiCard::new(
                         Statistic::new(
@@ -112,29 +130,29 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
             ),
         ))
         .child(section(
-            "Credits per day, by source",
+            "Tokens per day, by source",
             theme.colors.fg_muted,
             div().w(px(980.)).child(by_source_chart(ledger)),
         ))
         .child(section(
-            "Cumulative credits",
+            "Cumulative tokens",
             theme.colors.fg_muted,
             div().w(px(980.)).child(
                 LineChart::new("cumulative", ledger.days.clone())
                     .series(Series::new("all sources", ledger.cumulative.clone()))
-                    .format(|value| format!("{value:.0}")),
+                    .format(|value| human_f64(value)),
             ),
         ))
         .child(section(
-            "A year of credits, a tile a day",
+            "A year of tokens, a tile a day",
             theme.colors.fg_muted,
             div().w(px(980.)).child(
                 CalendarHeatmap::new("calendar", ledger.calendar.0, ledger.calendar.1.clone())
-                    .format(|value| format!("{value:.0} credits")),
+                    .format(|value| format!("{} tokens", human_f64(value))),
             ),
         ))
         .child(section(
-            "When the credits burn: the last two weeks, hour by hour",
+            "When the tokens burn: the last two weeks, hour by hour",
             theme.colors.fg_muted,
             div().w(px(980.)).child(hourly_chart(ledger)),
         ))
@@ -194,7 +212,7 @@ fn by_source_chart(ledger: &crate::core::aggregate::Ledger) -> impl IntoElement 
             }
         }
     }
-    chart.stacked().format(|value| format!("{value:.0}"))
+    chart.stacked().format(|value| human_f64(value))
 }
 
 /// Fourteen rows, one a day, twenty-four columns, one an hour: when the
@@ -207,7 +225,7 @@ fn hourly_chart(ledger: &crate::core::aggregate::Ledger) -> impl IntoElement {
         let label = day.strip_prefix("20").unwrap_or(day).to_string();
         chart = chart.row(label, row.iter().copied());
     }
-    chart.format(|value| format!("{value:.0} credits"))
+    chart.format(|value| human_f64(value))
 }
 
 fn section(title: &str, muted: gpui::Hsla, chart: gpui::Div) -> impl IntoElement {
@@ -223,6 +241,18 @@ fn section(title: &str, muted: gpui::Hsla, chart: gpui::Div) -> impl IntoElement
                 .child(title.to_string()),
         )
         .child(chart)
+}
+
+fn human_f64(value: f64) -> String {
+    if value >= 1e9 {
+        format!("{value:.2}B")
+    } else if value >= 1e6 {
+        format!("{value:.1}M")
+    } else if value >= 1e3 {
+        format!("{value:.0}k")
+    } else {
+        format!("{value:.0}")
+    }
 }
 
 fn pct(part: u64, whole: u64) -> f64 {

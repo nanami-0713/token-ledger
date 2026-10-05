@@ -16,7 +16,17 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
             ledger.by_model.get(&row.model).cloned().unwrap_or_default(),
         ));
     }
-    chart = chart.stacked().format(|value| format!("{value:.0}"));
+    chart = chart.stacked().format(|value| {
+        if value >= 1e9 {
+            format!("{value:.2}B")
+        } else if value >= 1e6 {
+            format!("{value:.1}M")
+        } else if value >= 1e3 {
+            format!("{value:.0}k")
+        } else {
+            format!("{value:.0}")
+        }
+    });
     let table_rows: Vec<Row> = ledger
         .models_rows
         .iter()
@@ -29,11 +39,11 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
                     Cell::Text(row.sources.join(" + ").into()),
                     Cell::Number(row.totals.requests as f64),
                     Cell::Number(tokens as f64),
-                    Cell::Number(row.totals.credits),
                     match row.totals.cost_cny {
                         Some(cny) => Cell::Number(cny),
                         None => Cell::from(""),
                     },
+                    Cell::Number(row.totals.credits),
                     Cell::Number(row.totals.cache_hit_rate().unwrap_or(0.0) * 100.0),
                 ],
             )
@@ -50,7 +60,7 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
                 .text_size(gpui::rems(0.9))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(theme.colors.fg_muted)
-                .child("Top models by credits per day"),
+                .child("Top models by tokens per day"),
         )
         .child(div().w(px(980.)).child(chart))
         .child(div().w(px(980.)).child(
@@ -61,8 +71,8 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
                     Column::new("sources", "Sources").width(rems(14.)),
                     Column::new("requests", "Requests").width(rems(8.)).end(),
                     Column::new("tokens", "Tokens").width(rems(10.)).end(),
+                    Column::new("cost", "¥ list").width(rems(9.)).end(),
                     Column::new("credits", "Credits").width(rems(9.)).end(),
-                    Column::new("cost", "\u{a5} list").width(rems(9.)).end(),
                     Column::new("hit", "Cache %").width(rems(8.)).end(),
                 ],
             )
