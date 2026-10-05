@@ -4,41 +4,13 @@ use ely_gpui_component::theme::ActiveTheme;
 use gpui::{Context, IntoElement, ParentElement, Styled, Window, div, px};
 
 use super::LedgerApp;
-use crate::core::aggregate::{day_of, Daily, Totals};
 
 /// The front page: today's burn, the week, the cache, and the two charts that
 /// tell the whole story — cumulative credits, and daily credits by source.
+/// Everything here reads the scan-time cache; no page re-walks records.
 pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<LedgerApp>) -> gpui::Div {
-    let billing = &app.billing;
-    let records = &app.records;
-    let today = jiff::Zoned::now().strftime("%Y-%m-%d").to_string();
-    let mut all = Totals::default();
-    let mut today_credits = 0.0;
-    let mut week_credits = 0.0;
-    let today_ms = jiff::Zoned::now().timestamp().as_millisecond();
-    for rec in records {
-        all.add(rec, billing);
-        let credits = billing.credits.credits(rec);
-        if day_of(rec.ts_ms) == today {
-            today_credits += credits;
-        }
-        if today_ms - rec.ts_ms <= 7 * 24 * 3600 * 1000 {
-            week_credits += credits;
-        }
-    }
-    let by_source = Daily::build(records, |rec| rec.source.clone(), "credits", billing);
-    let mut cumulative = vec![0.0; by_source.days.len()];
-    let mut running = 0.0;
-    for column in by_source.series.values() {
-        for (ix, value) in column.iter().enumerate() {
-            cumulative[ix] += value;
-        }
-    }
-    for value in cumulative.iter_mut() {
-        running += *value;
-        *value = running;
-    }
-    let hit = all.cache_hit_rate().unwrap_or(0.0) * 100.0;
+    let ledger = &app.ledger;
+    let hit = ledger.totals.cache_hit_rate().unwrap_or(0.0) * 100.0;
     let theme = cx.theme();
     div()
         .flex()
@@ -52,7 +24,7 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
                 .gap_4()
                 .child(
                     KpiCard::new(
-                        Statistic::new("kpi-today", "Today (credits)", today_credits)
+                        Statistic::new("kpi-today", "Today (credits)", ledger.today_credits)
                             .decimals(0),
                     )
                     .icon(ely_gpui_component::primitives::IconName::Zap)
@@ -60,14 +32,14 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
                 )
                 .child(
                     KpiCard::new(
-                        Statistic::new("kpi-week", "Last 7 days", week_credits).decimals(0),
+                        Statistic::new("kpi-week", "Last 7 days", ledger.week_credits).decimals(0),
                     )
                     .icon(ely_gpui_component::primitives::IconName::Calendar)
                     .caption("one window, all sources"),
                 )
                 .child(
                     KpiCard::new(
-                        Statistic::new("kpi-requests", "Requests", all.requests as f64)
+                        Statistic::new("kpi-requests", "Requests", ledger.totals.requests as f64)
                             .decimals(0),
                     )
                     .icon(ely_gpui_component::primitives::IconName::Activity)
@@ -87,14 +59,22 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
             "Credits per day, by source",
             theme.colors.fg_muted,
             div().w(px(980.)).child(
-                AreaChart::new("by-source", by_source.days.clone())
+                AreaChart::new("by-source", ledger.days.clone())
                     .series(Series::new(
                         "ZCode",
-                        by_source.series.get("zcode").cloned().unwrap_or_default(),
+                        ledger.by_source.get("zcode").cloned().unwrap_or_default(),
+                    ))
+                    .series(Series::new(
+                        "ChatGPT",
+                        ledger.by_source.get("codex").cloned().unwrap_or_default(),
                     ))
                     .series(Series::new(
                         "DeepSeek Harness",
-                        by_source.series.get("dsh").cloned().unwrap_or_default(),
+                        ledger.by_source.get("dsh").cloned().unwrap_or_default(),
+                    ))
+                    .series(Series::new(
+                        "Claude Code",
+                        ledger.by_source.get("claude-code").cloned().unwrap_or_default(),
                     ))
                     .stacked()
                     .format(|value| format!("{value:.0}")),
@@ -104,8 +84,8 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
             "Cumulative credits",
             theme.colors.fg_muted,
             div().w(px(980.)).child(
-                LineChart::new("cumulative", by_source.days.clone())
-                    .series(Series::new("all sources", cumulative))
+                LineChart::new("cumulative", ledger.days.clone())
+                    .series(Series::new("all sources", ledger.cumulative.clone()))
                     .format(|value| format!("{value:.0}")),
             ),
         ))
@@ -115,16 +95,20 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
                 .text_color(theme.colors.fg_muted)
                 .child(format!(
                     "{} days on record · cache {} of {} prompt tokens · {:.1}M output tokens · API list price \u{a5}{} (priced models)",
-                    by_source.days.len(),
-                    human_tokens(all.cache_read),
-                    human_tokens(all.cache_read + all.input_net),
-                    all.output as f64 / 1e6,
-                    all.cost_cny.map(|cny| format!("{cny:.0}")).unwrap_or_else(|| "0".into()),
+                    ledger.days.len(),
+                    human_tokens(ledger.totals.cache_read),
+                    human_tokens(ledger.totals.cache_read + ledger.totals.input_net),
+                    ledger.totals.output as f64 / 1e6,
+                    ledger
+                        .totals
+                        .cost_cny
+                        .map(|cny| format!("{cny:.0}"))
+                        .unwrap_or_else(|| "0".into()),
                 )),
         )
 }
 
-fn section(title: &str, muted: gpui::Hsla, chart: gpui::Div) -> gpui::Div {
+fn section(title: &str, muted: gpui::Hsla, chart: gpui::Div) -> impl IntoElement {
     div()
         .flex()
         .flex_col()

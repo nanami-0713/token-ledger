@@ -21,3 +21,7 @@ toml = "0.8"
 zstd = "0.13"
 
 [workspace]
+
+# A charting app in debug-slow dependencies is unusable; optimize deps only.
+[profile.dev.package."*"]
+opt-level = 2

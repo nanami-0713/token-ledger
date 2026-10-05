@@ -3,11 +3,10 @@ use ely_gpui_component::theme::ActiveTheme;
 use gpui::{Context, IntoElement, ParentElement, Styled, Window, div, px, rems};
 
 use super::LedgerApp;
-use crate::core::aggregate;
 
 /// The heaviest sessions first: what ran, where, and what it cost.
 pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<LedgerApp>) -> gpui::Div {
-    let sessions = aggregate::sessions(&app.records, &app.billing);
+    let sessions = &app.ledger.sessions;
     let rows: Vec<Row> = sessions
         .iter()
         .take(60)

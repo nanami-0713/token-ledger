@@ -13,8 +13,8 @@ use gpui::{
     InteractiveElement, StatefulInteractiveElement,
 };
 
+use crate::core::aggregate::Ledger;
 use crate::core::billing::Billing;
-use crate::core::record::UsageRecord;
 use crate::core::sources::{self, Config, SourceStatus};
 
 actions!(ledger, [Quit]);
@@ -31,7 +31,8 @@ pub enum Page {
 pub struct LedgerApp {
     pub config: Config,
     pub billing: Billing,
-    pub records: Vec<UsageRecord>,
+    /// One scan's answers, computed once; pages never re-walk records.
+    pub ledger: Ledger,
     pub statuses: Vec<SourceStatus>,
     pub page: Page,
     pub dark: bool,
@@ -43,10 +44,11 @@ impl LedgerApp {
         let config = Config::load();
         let billing = config.billing();
         let (records, statuses) = sources::scan_all(&config);
+        let ledger = Ledger::build(&records, &billing);
         let mut app = Self {
             config,
             billing,
-            records,
+            ledger,
             statuses,
             page: match page {
                 1 => Page::Models,
@@ -64,7 +66,7 @@ impl LedgerApp {
     pub fn rescan(&mut self, cx: &mut Context<Self>) {
         self.billing = self.config.billing();
         let (records, statuses) = sources::scan_all(&self.config);
-        self.records = records;
+        self.ledger = Ledger::build(&records, &self.billing);
         self.statuses = statuses;
         self.scanned_at = now_text();
         cx.notify();
@@ -125,7 +127,9 @@ impl Render for LedgerApp {
             .gap_2()
             .w(px(224.))
             .h_full()
-            .p_4()
+            .pt(px(48.))
+            .px_4()
+            .pb_4()
             .border_r_1()
             .border_color(colors.border)
             .child(

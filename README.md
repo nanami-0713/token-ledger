@@ -27,10 +27,12 @@ Three ledgers side by side, on every view:
 ## Run it
 
 ```sh
-cargo run                # the window
+cargo run                # the window (dev)
 cargo run -- --smoke     # the whole ledger, printed to stdout
 cargo run -- --dark      # start dark
 cargo run -- --page 2    # start on a page: 0 overview, 1 models, 2 sessions, 3 sources
+sh scripts/bundle.sh     # dist/TokenLedger.app — a real app: own icon slot,
+open dist/TokenLedger.app  # own Dock presence, double-clickable, no terminal
 ```
 
 No full Xcode needed; gpui compiles its Metal shaders at runtime.
@@ -92,24 +94,37 @@ output = 28.0
 # currency = "usd"           # a USD card converts through fx_usd_cny
 ```
 
-Built-in cards (BigModel list prices, CNY per million tokens; tiered models
-take their long-context tier):
+Built-in cards, every vendor's published list price (tiered or time-of-day
+pricing takes its dear tier; DeepSeek's retired names bill as their
+successor; OpenAI's page blocks machines, so its cards come from resellers
+citing it — verify before invoicing anyone):
 
-| Model | Input | Cache hit | Output |
-|---|---|---|---|
-| glm-5.3 | 8 | 2 | 28 |
-| glm-5.3-flash | 0.8 | 0.23 | 2.8 |
-| glm-5.3-flashx | 2 | 0.57 | 7 |
-| glm-5.2 | 8 | 2 | 28 |
-| glm-5.1 | 8 | 2 | 28 |
-| glm-5 | 6 | 1.5 | 22 |
-| glm-5-turbo | 7 | 1.8 | 26 |
-| glm-4.7 | 4 | 0.8 | 16 |
-| glm-4.7-flashx | 0.5 | 0.1 | 3 |
-| glm-4.7-flash | free | free | free |
+| Model | Input | Cache hit | Output | Currency |
+|---|---|---|---|---|
+| glm-5.3 | 8 | 2 | 28 | CNY |
+| glm-5.3-flash | 0.8 | 0.23 | 2.8 | CNY |
+| glm-5.3-flashx | 2 | 0.57 | 7 | CNY |
+| glm-5.2 / glm-5.1 | 8 | 2 | 28 | CNY |
+| glm-5 / glm-5-turbo | 6–7 | 1.5–1.8 | 22–26 | CNY |
+| glm-4.7 | 4 | 0.8 | 16 | CNY |
+| glm-4.7-flashx | 0.5 | 0.1 | 3 | CNY |
+| glm-4.7-flash | free | free | free | CNY |
+| kimi-k3 / k3 | 20 | 2 | 100 | CNY |
+| kimi-k2.7-code | 6.5 | 1.3 | 27 | CNY |
+| kimi-k2.7-code-highspeed | 13 | 2.6 | 54 | CNY |
+| kimi-k2.6 | 6.5 | 1.1 | 27 | CNY |
+| deepseek-v4-pro | 1.32 | 0.044 | 3.96 | USD |
+| deepseek-v4-flash / deepseek-flash | 0.30 | 0.006 | 1.20 | USD |
+| claude-opus-4.1 / 4 | 15 | 1.5 | 75 | USD |
+| claude-sonnet-4 / 3.7 / 3.5 | 3 | 0.3 | 15 | USD |
+| claude-haiku-3.5 | 0.8 | 0.08 | 4 | USD |
+| claude-haiku-3 | 0.25 | 0.03 | 1.25 | USD |
+| gpt-5.2 / gpt-5.2-codex | 1.75 | 0.175 | 14 | USD |
+| gpt-5.5 | 5 | 0.5 | 30 | USD |
 
 `fx_usd_cny = 7.2` (configurable) converts a `currency = "usd"` card into
-the CNY ledger. DeepSeek and Kimi cards are one entry each, away.
+the CNY ledger. `claude-fable` has no published official card and stays
+unpriced rather than guessed.
 
 An id that matches a built-in replaces it, so a built-in can be redirected
 at a different path or turned off (`enabled = false`).

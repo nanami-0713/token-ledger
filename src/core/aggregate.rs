@@ -110,6 +110,110 @@ pub struct SessionRow {
     pub models: Vec<String>,
 }
 
+/// One model's merged footprint, for the models table.
+#[derive(Debug, Clone)]
+pub struct ModelRow {
+    pub model: String,
+    pub sources: Vec<String>,
+    pub totals: Totals,
+}
+
+/// Everything the pages show, computed once per scan. Pages re-render off
+/// this without touching the records again — hovering a chart must not
+/// re-walk thirty thousand requests.
+#[derive(Debug, Clone, Default)]
+pub struct Ledger {
+    pub totals: Totals,
+    pub today_credits: f64,
+    pub week_credits: f64,
+    pub days: Vec<String>,
+    /// Daily credits, one column per source, aligned with `days`.
+    pub by_source: BTreeMap<String, Vec<f64>>,
+    /// Daily credits per model, aligned with `days`.
+    pub by_model: BTreeMap<String, Vec<f64>>,
+    /// Running total of daily credits, aligned with `days`.
+    pub cumulative: Vec<f64>,
+    pub models_rows: Vec<ModelRow>,
+    pub sessions: Vec<SessionRow>,
+}
+
+impl Ledger {
+    pub fn build(records: &[UsageRecord], billing: &Billing) -> Self {
+        let mut totals = Totals::default();
+        let today = jiff::Zoned::now().strftime("%Y-%m-%d").to_string();
+        let today_ms = jiff::Zoned::now().timestamp().as_millisecond();
+        let (mut today_credits, mut week_credits) = (0.0, 0.0);
+        for rec in records {
+            totals.add(rec, billing);
+            let credits = billing.credits.credits(rec);
+            if day_of(rec.ts_ms) == today {
+                today_credits += credits;
+            }
+            if today_ms - rec.ts_ms <= 7 * 24 * 3600 * 1000 {
+                week_credits += credits;
+            }
+        }
+        let source_daily = Daily::build(records, |rec| rec.source.clone(), "credits", billing);
+        let model_daily = Daily::build(records, |rec| rec.model_key.clone(), "credits", billing);
+        let mut cumulative = vec![0.0; source_daily.days.len()];
+        for column in source_daily.series.values() {
+            for (ix, value) in column.iter().enumerate() {
+                cumulative[ix] += value;
+            }
+        }
+        let mut running = 0.0;
+        for value in cumulative.iter_mut() {
+            running += *value;
+            *value = running;
+        }
+        let mut merged: BTreeMap<String, BTreeMap<String, Totals>> = BTreeMap::new();
+        for rec in records {
+            merged
+                .entry(rec.model_key.clone())
+                .or_default()
+                .entry(rec.source.clone())
+                .or_default()
+                .add(rec, billing);
+        }
+        let mut models_rows: Vec<ModelRow> = merged
+            .into_iter()
+            .map(|(model, by_source)| {
+                let mut row = ModelRow {
+                    model: model.clone(),
+                    sources: by_source.keys().cloned().collect(),
+                    totals: Totals::default(),
+                };
+                for totals in by_source.values() {
+                    row.totals.requests += totals.requests;
+                    row.totals.input_net += totals.input_net;
+                    row.totals.cache_read += totals.cache_read;
+                    row.totals.output += totals.output;
+                    row.totals.credits += totals.credits;
+                    row.totals.cost_cny = match (row.totals.cost_cny, totals.cost_cny) {
+                        (Some(a), Some(b)) => Some(a + b),
+                        (a, b) => a.or(b),
+                    };
+                }
+                row
+            })
+            .collect();
+        models_rows.sort_by(|a, b| b.totals.credits.total_cmp(&a.totals.credits));
+        let mut sessions = sessions(records, billing);
+        sessions.truncate(200);
+        Self {
+            totals,
+            today_credits,
+            week_credits,
+            days: source_daily.days,
+            by_source: source_daily.series,
+            by_model: model_daily.series,
+            cumulative,
+            models_rows,
+            sessions,
+        }
+    }
+}
+
 pub fn sessions(records: &[UsageRecord], billing: &Billing) -> Vec<SessionRow> {
     let mut by_key: BTreeMap<(String, String), SessionRow> = BTreeMap::new();
     for rec in records {

@@ -85,10 +85,11 @@ pub struct Price {
     pub currency: Option<String>,
 }
 
-/// BigModel's published per-use prices, CNY per million tokens, shipped so
-/// the money column works before any config. Tiered models (by input or
-/// output length) take their long-context tier, the realistic one for
-/// coding-agent traffic. Override or extend in `config.toml`.
+/// Each vendor's published per-use prices, shipped so the money column works
+/// before any config. CNY cards are native; USD cards convert through
+/// `Billing::usd_cny`. Tiered or time-of-day pricing takes its dear tier.
+/// DeepSeek's retired names bill as their successor. Override or extend in
+/// `config.toml`.
 pub fn default_prices() -> BTreeMap<String, Price> {
     let card = |input: f64, cache_read: f64, output: f64| Price {
         input,
@@ -96,7 +97,14 @@ pub fn default_prices() -> BTreeMap<String, Price> {
         output,
         currency: None,
     };
+    let usd = |input: f64, cache_read: f64, output: f64| Price {
+        input,
+        cache_read,
+        output,
+        currency: Some("usd".into()),
+    };
     [
+        // BigModel, CNY per million.
         ("glm-5.3", card(8.0, 2.0, 28.0)),
         ("glm-5.3-flash", card(0.8, 0.23, 2.8)),
         ("glm-5.3-flashx", card(2.0, 0.57, 7.0)),
@@ -107,6 +115,29 @@ pub fn default_prices() -> BTreeMap<String, Price> {
         ("glm-4.7", card(4.0, 0.8, 16.0)),
         ("glm-4.7-flashx", card(0.5, 0.1, 3.0)),
         ("glm-4.7-flash", card(0.0, 0.0, 0.0)),
+        // Kimi, CNY per million.
+        ("kimi-k3", card(20.0, 2.0, 100.0)),
+        ("k3", card(20.0, 2.0, 100.0)),
+        ("kimi-k2.7-code", card(6.5, 1.3, 27.0)),
+        ("kimi-k2.7-code-highspeed", card(13.0, 2.6, 54.0)),
+        ("kimi-k2.6", card(6.5, 1.1, 27.0)),
+        // DeepSeek, USD per million, peak tier.
+        ("deepseek-v4-pro", usd(1.32, 0.044, 3.96)),
+        ("deepseek-v4-flash", usd(0.30, 0.006, 1.20)),
+        ("deepseek-flash", usd(0.30, 0.006, 1.20)),
+        ("deepseek-v4-flash-vision-exp", usd(0.30, 0.006, 1.20)),
+        // Anthropic, USD per million.
+        ("claude-opus-4.1", usd(15.0, 1.5, 75.0)),
+        ("claude-opus-4", usd(15.0, 1.5, 75.0)),
+        ("claude-sonnet-4", usd(3.0, 0.3, 15.0)),
+        ("claude-sonnet-3.7", usd(3.0, 0.3, 15.0)),
+        ("claude-sonnet-3.5", usd(3.0, 0.3, 15.0)),
+        ("claude-haiku-3.5", usd(0.8, 0.08, 4.0)),
+        ("claude-haiku-3", usd(0.25, 0.03, 1.25)),
+        // OpenAI, USD per million, as cited by resellers of the blocked page.
+        ("gpt-5.2", usd(1.75, 0.175, 14.0)),
+        ("gpt-5.2-codex", usd(1.75, 0.175, 14.0)),
+        ("gpt-5.5", usd(5.0, 0.5, 30.0)),
     ]
     .into_iter()
     .map(|(key, price)| (key.to_string(), price))
@@ -177,6 +208,9 @@ mod tests {
         // One million tokens each way of glm-5.3: 8 + 28 = CNY 36.
         let rec_ = rec(0, "glm-5.3", 1_000_000, 0, 1_000_000);
         assert!((billing.cost_cny(&rec_).unwrap() - 36.0).abs() < 1e-9);
+        // Kimi's card, native CNY, checks out too.
+        let rec_ = rec(0, "kimi-k3", 1_000_000, 0, 1_000_000);
+        assert!((billing.cost_cny(&rec_).unwrap() - 120.0).abs() < 1e-9);
         // A usd-denominated card converts through the rate.
         billing.prices.insert(
             "fable".into(),
