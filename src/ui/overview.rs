@@ -58,27 +58,7 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
         .child(section(
             "Credits per day, by source",
             theme.colors.fg_muted,
-            div().w(px(980.)).child(
-                AreaChart::new("by-source", ledger.days.clone())
-                    .series(Series::new(
-                        "ZCode",
-                        ledger.by_source.get("zcode").cloned().unwrap_or_default(),
-                    ))
-                    .series(Series::new(
-                        "ChatGPT",
-                        ledger.by_source.get("codex").cloned().unwrap_or_default(),
-                    ))
-                    .series(Series::new(
-                        "DeepSeek Harness",
-                        ledger.by_source.get("dsh").cloned().unwrap_or_default(),
-                    ))
-                    .series(Series::new(
-                        "Claude Code",
-                        ledger.by_source.get("claude-code").cloned().unwrap_or_default(),
-                    ))
-                    .stacked()
-                    .format(|value| format!("{value:.0}")),
-            ),
+            div().w(px(980.)).child(by_source_chart(ledger)),
         ))
         .child(section(
             "Cumulative credits",
@@ -106,6 +86,26 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
                         .unwrap_or_else(|| "0".into()),
                 )),
         )
+}
+
+/// One stacked area per source that actually has data — a chart series
+/// without a value per label is a panic, so absent sources stay absent.
+fn by_source_chart(ledger: &crate::core::aggregate::Ledger) -> impl IntoElement {
+    const NAMES: [(&str, &str); 4] = [
+        ("zcode", "ZCode"),
+        ("codex", "ChatGPT"),
+        ("dsh", "DeepSeek Harness"),
+        ("claude-code", "Claude Code"),
+    ];
+    let mut chart = AreaChart::new("by-source", ledger.days.clone());
+    for (key, label) in NAMES {
+        if let Some(values) = ledger.by_source.get(key) {
+            if values.len() == ledger.days.len() {
+                chart = chart.series(Series::new(label, values.clone()));
+            }
+        }
+    }
+    chart.stacked().format(|value| format!("{value:.0}"))
 }
 
 fn section(title: &str, muted: gpui::Hsla, chart: gpui::Div) -> impl IntoElement {

@@ -32,6 +32,9 @@ cat > "$BUNDLE/Contents/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
+# The linker signs the executable alone; a bundle wants its own ad-hoc
+# signature, or Finder and Gatekeeper argue about resources that aren't there.
+codesign --force --sign - "$BUNDLE" >/dev/null 2>&1 || true
 touch "$BUNDLE"
 echo "bundled: $BUNDLE"
 echo "open it:  open $BUNDLE"
