@@ -72,29 +72,67 @@ impl CreditConfig {
     }
 }
 
-/// USD per one million tokens.
+/// List price per one million tokens, in its `currency` (default CNY, the
+/// unit BigModel and DeepSeek publish). A `usd` card converts through
+/// `Billing::usd_cny` so the money ledger stays one number.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Price {
     pub input: f64,
     pub cache_read: f64,
     pub output: f64,
+    #[serde(default)]
+    pub currency: Option<String>,
 }
 
-#[derive(Debug, Clone, Default)]
+/// BigModel's published per-use prices, CNY per million tokens, shipped so
+/// the money column works before any config. Tiered models (by input or
+/// output length) take their long-context tier, the realistic one for
+/// coding-agent traffic. Override or extend in `config.toml`.
+pub fn default_prices() -> BTreeMap<String, Price> {
+    let card = |input: f64, cache_read: f64, output: f64| Price {
+        input,
+        cache_read,
+        output,
+        currency: None,
+    };
+    [
+        ("glm-5.3", card(8.0, 2.0, 28.0)),
+        ("glm-5.3-flash", card(0.8, 0.23, 2.8)),
+        ("glm-5.3-flashx", card(2.0, 0.57, 7.0)),
+        ("glm-5.2", card(8.0, 2.0, 28.0)),
+        ("glm-5.1", card(8.0, 2.0, 28.0)),
+        ("glm-5", card(6.0, 1.5, 22.0)),
+        ("glm-5-turbo", card(7.0, 1.8, 26.0)),
+        ("glm-4.7", card(4.0, 0.8, 16.0)),
+        ("glm-4.7-flashx", card(0.5, 0.1, 3.0)),
+        ("glm-4.7-flash", card(0.0, 0.0, 0.0)),
+    ]
+    .into_iter()
+    .map(|(key, price)| (key.to_string(), price))
+    .collect()
+}
+
+#[derive(Debug, Clone)]
 pub struct Billing {
     pub credits: CreditConfig,
     pub prices: BTreeMap<String, Price>,
+    pub usd_cny: f64,
 }
 
 impl Billing {
-    pub fn usd(&self, rec: &UsageRecord) -> Option<f64> {
+    /// What the request would have cost on the API, in CNY.
+    pub fn cost_cny(&self, rec: &UsageRecord) -> Option<f64> {
         let price = self.prices.get(&rec.model_key)?;
-        Some(
-            (rec.input_net as f64 / 1e6) * price.input
-                + (rec.cache_read as f64 / 1e6) * price.cache_read
-                + (rec.output as f64 / 1e6) * price.output,
-        )
+        let cny = (rec.input_net as f64 / 1e6) * price.input
+            + (rec.cache_read as f64 / 1e6) * price.cache_read
+            + (rec.output as f64 / 1e6) * price.output;
+        let cny = if price.currency.as_deref() == Some("usd") {
+            cny * self.usd_cny
+        } else {
+            cny
+        };
+        Some(cny)
     }
 }
 
@@ -127,6 +165,30 @@ mod tests {
         let flash = rec(0, "glm-5.3-flash", 10_000, 0, 10_000);
         let std = rec(0, "glm-5.3", 10_000, 0, 10_000);
         assert!(cfg.credits(&flash) < cfg.credits(&std));
+    }
+
+    #[test]
+    fn glm_list_price_math() {
+        let mut billing = Billing {
+            credits: CreditConfig::default(),
+            prices: super::default_prices(),
+            usd_cny: 7.2,
+        };
+        // One million tokens each way of glm-5.3: 8 + 28 = CNY 36.
+        let rec_ = rec(0, "glm-5.3", 1_000_000, 0, 1_000_000);
+        assert!((billing.cost_cny(&rec_).unwrap() - 36.0).abs() < 1e-9);
+        // A usd-denominated card converts through the rate.
+        billing.prices.insert(
+            "fable".into(),
+            Price {
+                input: 3.0,
+                cache_read: 0.3,
+                output: 15.0,
+                currency: Some("usd".into()),
+            },
+        );
+        let rec_ = rec(0, "fable", 1_000_000, 0, 1_000_000);
+        assert!((billing.cost_cny(&rec_).unwrap() - 18.0 * 7.2).abs() < 1e-9);
     }
 
     #[test]

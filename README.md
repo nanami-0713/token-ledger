@@ -20,8 +20,9 @@ Three ledgers side by side, on every view:
 - **Plan credits** — the GLM Coding Plan formula (flash/standard tiers,
   peak window Mon–Fri 14:00–18:00 Asia/Shanghai at full price, off-peak at
   half), coefficients configurable.
-- **Dollars** — API price cards per model (`$ / 1M tokens`), configurable;
-  a model without a card shows tokens only.
+- **Money** — API list price per model in CNY (`\u{a5} / 1M tokens`), with
+  BigModel's published GLM prices built in; a model without a card shows
+  tokens only, never a guess.
 
 ## Run it
 
@@ -42,7 +43,7 @@ Built-ins, discovered on launch, each toggleable on the Sources page:
 |---|---|
 | ZCode | `~/.zcode/cli/db/db.sqlite`, table `model_usage` (per-request, billing-grade) |
 | DeepSeek Harness | `~/.dsh/sessions/<workdir>/session-*/session.jsonl.zstd` |
-| Codex | `~/.codex/sessions/**/*.jsonl` |
+| ChatGPT (Codex engine) | `~/.codex/sessions/**/*.jsonl` |
 | Claude Code | `~/.claude/projects/**/*.jsonl` |
 
 ### Add any other tool
@@ -84,11 +85,31 @@ std_out = 24.0
 divisor = 10000
 offpeak_factor = 0.5
 
-[prices."glm-5.3"]            # USD per 1M tokens; add a card per model
-input = 4.0
-cache_read = 0.4
-output = 16.0
+[prices."glm-5.3"]            # \u{a5} per 1M tokens; built-ins below, override freely
+input = 8.0
+cache_read = 2.0
+output = 28.0
+# currency = "usd"           # a USD card converts through fx_usd_cny
 ```
+
+Built-in cards (BigModel list prices, CNY per million tokens; tiered models
+take their long-context tier):
+
+| Model | Input | Cache hit | Output |
+|---|---|---|---|
+| glm-5.3 | 8 | 2 | 28 |
+| glm-5.3-flash | 0.8 | 0.23 | 2.8 |
+| glm-5.3-flashx | 2 | 0.57 | 7 |
+| glm-5.2 | 8 | 2 | 28 |
+| glm-5.1 | 8 | 2 | 28 |
+| glm-5 | 6 | 1.5 | 22 |
+| glm-5-turbo | 7 | 1.8 | 26 |
+| glm-4.7 | 4 | 0.8 | 16 |
+| glm-4.7-flashx | 0.5 | 0.1 | 3 |
+| glm-4.7-flash | free | free | free |
+
+`fx_usd_cny = 7.2` (configurable) converts a `currency = "usd"` card into
+the CNY ledger. DeepSeek and Kimi cards are one entry each, away.
 
 An id that matches a built-in replaces it, so a built-in can be redirected
 at a different path or turned off (`enabled = false`).

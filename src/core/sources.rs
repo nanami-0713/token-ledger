@@ -77,6 +77,8 @@ pub struct Config {
     pub credits: Option<CreditConfig>,
     #[serde(default)]
     pub prices: BTreeMap<String, Price>,
+    #[serde(default)]
+    pub fx_usd_cny: Option<f64>,
 }
 
 impl Config {
@@ -101,7 +103,8 @@ impl Config {
             },
             SourceDef {
                 id: "codex".into(),
-                label: "Codex".into(),
+                // The same engine ships as the ChatGPT desktop app.
+                label: "ChatGPT".into(),
                 enabled: true,
                 kind: SourceKind::Jsonl {
                     paths: vec!["~/.codex/sessions/**/*.jsonl".into()],
@@ -160,9 +163,14 @@ impl Config {
     }
 
     pub fn billing(&self) -> Billing {
+        let mut prices = super::billing::default_prices();
+        for (key, price) in &self.prices {
+            prices.insert(key.clone(), price.clone());
+        }
         Billing {
             credits: self.credits.clone().unwrap_or_default(),
-            prices: self.prices.clone(),
+            prices,
+            usd_cny: self.fx_usd_cny.unwrap_or(7.2),
         }
     }
 }

@@ -114,11 +114,12 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
                 .text_size(gpui::rems(0.8))
                 .text_color(theme.colors.fg_muted)
                 .child(format!(
-                    "{} days on record · cache {} of {} prompt tokens · {:.1}M output tokens",
+                    "{} days on record · cache {} of {} prompt tokens · {:.1}M output tokens · API list price \u{a5}{} (priced models)",
                     by_source.days.len(),
                     human_tokens(all.cache_read),
                     human_tokens(all.cache_read + all.input_net),
                     all.output as f64 / 1e6,
+                    all.cost_cny.map(|cny| format!("{cny:.0}")).unwrap_or_else(|| "0".into()),
                 )),
         )
 }

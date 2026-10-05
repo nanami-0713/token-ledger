@@ -16,7 +16,7 @@ pub struct Totals {
     pub output: u64,
     pub reasoning: u64,
     pub credits: f64,
-    pub usd: Option<f64>,
+    pub cost_cny: Option<f64>,
 }
 
 impl Totals {
@@ -28,8 +28,8 @@ impl Totals {
         self.output += rec.output;
         self.reasoning += rec.reasoning;
         self.credits += billing.credits.credits(rec);
-        let usd = self.usd.unwrap_or(0.0) + billing.usd(rec).unwrap_or(0.0);
-        self.usd = Some(usd);
+        let cny = self.cost_cny.unwrap_or(0.0) + billing.cost_cny(rec).unwrap_or(0.0);
+        self.cost_cny = Some(cny);
     }
 
     pub fn cache_hit_rate(&self) -> Option<f64> {
@@ -89,7 +89,7 @@ impl Daily {
             let column = series.entry(key).or_insert_with(|| vec![0.0; days.len()]);
             let cell = match value {
                 "credits" => total.credits,
-                "usd" => total.usd.unwrap_or(0.0),
+                "cny" => total.cost_cny.unwrap_or(0.0),
                 "tokens" => (total.input_net + total.cache_read + total.output) as f64,
                 _ => total.requests as f64,
             };

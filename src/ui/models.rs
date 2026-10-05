@@ -58,6 +58,10 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
                     Cell::Number(total.requests as f64),
                     Cell::Number(tokens as f64),
                     Cell::Number(total.credits),
+                    match total.cost_cny {
+                        Some(cny) => Cell::Number(cny),
+                        None => Cell::from(""),
+                    },
                     Cell::Number(
                         total.cache_hit_rate().unwrap_or(0.0) * 100.0,
                     ),
@@ -87,6 +91,7 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
                     Column::new("requests", "Requests").width(rems(8.)).end(),
                     Column::new("tokens", "Tokens").width(rems(10.)).end(),
                     Column::new("credits", "Credits").width(rems(9.)).end(),
+                    Column::new("cost", "\u{a5} list").width(rems(9.)).end(),
                     Column::new("hit", "Cache %").width(rems(8.)).end(),
                 ],
             )

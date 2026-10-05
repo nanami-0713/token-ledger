@@ -81,6 +81,13 @@ fn smoke_main() -> anyhow::Result<()> {
         total.credits,
         total.cache_hit_rate().unwrap_or(0.0) * 100.0
     );
+    println!(
+        "API list price of it all: {}",
+        match total.cost_cny {
+            Some(cny) => format!("\u{a5}{cny:.2}"),
+            None => "no price card".into(),
+        }
+    );
     let days = aggregate::Daily::build(
         &records,
         |rec| rec.source.clone(),
