@@ -7,7 +7,7 @@ use gpui::{
     Window, div, px,
 };
 
-use super::LedgerApp;
+use super::{LedgerApp, human_f64};
 use crate::core::aggregate::Ledger;
 
 /// The front page. Tiles carry a name and a number; the long explanation of
@@ -276,18 +276,6 @@ fn section(title: &str, muted: gpui::Hsla, chart: gpui::Div) -> impl IntoElement
                 .child(title.to_string()),
         )
         .child(chart)
-}
-
-fn human_f64(value: f64) -> String {
-    if value >= 1e9 {
-        format!("{value:.2}B")
-    } else if value >= 1e6 {
-        format!("{value:.1}M")
-    } else if value >= 1e3 {
-        format!("{value:.0}k")
-    } else {
-        format!("{value:.0}")
-    }
 }
 
 fn human_tokens(value: u64) -> String {

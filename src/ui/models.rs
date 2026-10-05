@@ -4,7 +4,7 @@ use ely_gpui_component::tables::{Cell, Column, DataTable, Row};
 use ely_gpui_component::theme::ActiveTheme;
 use gpui::{Context, IntoElement, ParentElement, SharedString, Styled, Window, div, px, rems};
 
-use super::LedgerApp;
+use super::{LedgerApp, human_f64};
 use crate::core::aggregate::{Ledger, ModelRow, Span};
 
 /// The merge, on show, in any lookback window: every model one row and one
@@ -79,7 +79,7 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
             }
         }
     }
-    stacked = stacked.stacked().format(human);
+    stacked = stacked.stacked().format(human_f64);
     div()
         .flex()
         .flex_col()
@@ -167,16 +167,4 @@ fn section_title(title: &str, muted: gpui::Hsla) -> gpui::Div {
                 .text_color(muted)
                 .child(title.to_string()),
         )
-}
-
-fn human(value: f64) -> String {
-    if value >= 1e9 {
-        format!("{value:.2}B")
-    } else if value >= 1e6 {
-        format!("{value:.1}M")
-    } else if value >= 1e3 {
-        format!("{value:.0}k")
-    } else {
-        format!("{value:.0}")
-    }
 }

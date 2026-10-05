@@ -8,9 +8,9 @@ use ely_gpui_component::buttons::{Button, ButtonVariant};
 use ely_gpui_component::navigation::NavItem;
 use ely_gpui_component::theme::{ActiveTheme, Mode, Theme};
 use gpui::{
-    App, AppContext as _, Context, ElementId, IntoElement, ParentElement, Render, SharedString,
-    Styled, TitlebarOptions, Window, WindowOptions, actions, div, point, px, size,
-    InteractiveElement, StatefulInteractiveElement,
+    App, AppContext as _, Context, CursorStyle, DragMoveEvent, ElementId, EmptyView, IntoElement,
+    ParentElement, Pixels, Render, SharedString, Styled, TitlebarOptions, Window, WindowOptions,
+    actions, div, point, px, size, InteractiveElement, StatefulInteractiveElement,
 };
 
 use crate::core::aggregate::{Ledger, Span};
@@ -19,6 +19,35 @@ use crate::core::record::UsageRecord;
 use crate::core::sources::{self, Config, ScanExtras, SourceStatus};
 
 actions!(ledger, [Quit]);
+
+/// How far the sidebar's edge may be dragged, in px. The floor keeps the
+/// nav legible; the ceiling keeps the charts more than half the window.
+const SIDEBAR_MIN: f32 = 200.0;
+const SIDEBAR_MAX: f32 = 480.0;
+
+/// Drag marker for the sidebar's resize strip; the width itself rides the
+/// mouse in `on_drag_move`.
+struct SidebarResize;
+
+/// One short human number for every chart axis and tooltip: k/M/B, a
+/// decimal only when the value has one.
+pub(crate) fn human_f64(value: f64) -> String {
+    let (unit, factor) = if value >= 1e9 {
+        ("B", 1e9)
+    } else if value >= 1e6 {
+        ("M", 1e6)
+    } else if value >= 1e3 {
+        ("k", 1e3)
+    } else {
+        return format!("{value:.0}");
+    };
+    let scaled = value / factor;
+    if (scaled - scaled.round()).abs() < 1e-9 {
+        format!("{}{unit}", scaled.round() as i64)
+    } else {
+        format!("{scaled:.1}{unit}")
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Page {
@@ -43,6 +72,8 @@ pub struct LedgerApp {
     pub statuses: Vec<SourceStatus>,
     pub page: Page,
     pub dark: bool,
+    /// The sidebar's width, dragged along its right edge.
+    pub sidebar_w: Pixels,
     pub scanned_at: String,
     /// What the last Add-a-folder probe decided, shown on the Sources page.
     pub folder_note: Option<String>,
@@ -70,6 +101,7 @@ impl LedgerApp {
                 _ => Page::Overview,
             },
             dark: dark || cx.theme().mode() == Mode::Dark,
+            sidebar_w: px(224.),
             scanned_at: now_text(),
             folder_note: None,
         };
@@ -174,12 +206,12 @@ impl Render for LedgerApp {
                     }
                 })
         };
-        let sidebar = div()
+        let sidebar_body = div()
             .id("sidebar")
             .flex()
             .flex_col()
             .gap_2()
-            .w(px(224.))
+            .w_full()
             .h_full()
             .pt(px(48.))
             .px_4()
@@ -271,6 +303,37 @@ impl Render for LedgerApp {
                     .text_size(gpui::rems(0.75))
                     .text_color(colors.fg_muted)
                     .child(format!("scanned at {}", self.scanned_at)),
+            );
+        // The strip straddles the sidebar's right border; dragging it moves
+        // the border, clamped, and the cursor talks east-west over it.
+        let sidebar = div()
+            .relative()
+            .flex_none()
+            .w(self.sidebar_w)
+            .h_full()
+            .child(sidebar_body)
+            .child(
+                div()
+                    .id("sidebar-resize")
+                    .absolute()
+                    .top_0()
+                    .right_0()
+                    .bottom_0()
+                    .w(px(8.))
+                    .flex_none()
+                    .cursor(CursorStyle::ResizeLeftRight)
+                    .hover(|strip| strip.bg(colors.border.opacity(0.6)))
+                    .on_drag(SidebarResize, |_, _, _, cx| cx.new(|_| EmptyView))
+                    .on_drag_move({
+                        let entity = entity.clone();
+                        move |event: &DragMoveEvent<SidebarResize>, _, cx| {
+                            entity.update(cx, |app, cx| {
+                                let x = f32::from(event.event.position.x);
+                                app.sidebar_w = px(x.clamp(SIDEBAR_MIN, SIDEBAR_MAX));
+                                cx.notify();
+                            })
+                        }
+                    }),
             );
         let content = match self.page {
             Page::Overview => overview::render(self, window, cx),
