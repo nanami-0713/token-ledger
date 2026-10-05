@@ -1,0 +1,83 @@
+use std::path::Path;
+
+use anyhow::Context;
+use rusqlite::{Connection, OpenFlags};
+
+use super::record::UsageRecord;
+
+/// ZCode's per-request ledger: `~/.zcode/cli/db/db.sqlite`, table
+/// `model_usage` (the billing-grade source, per zusage.sh), joined to
+/// `session` for a human title.
+pub fn scan(db: &Path, ctx: &super::sources::ScanCtx) -> anyhow::Result<Vec<UsageRecord>> {
+    if !db.exists() {
+        anyhow::bail!("{} does not exist", db.display());
+    }
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let db = Connection::open_with_flags(db, flags).context("open db read-only")?;
+    let mut statement = db
+        .prepare(
+            "SELECT m.started_at, m.model_id, m.provider_id, m.session_id, m.agent,
+                    m.input_tokens, m.output_tokens, m.reasoning_tokens,
+                    m.cache_creation_input_tokens, m.cache_read_input_tokens,
+                    m.time_to_first_token_ms, s.title
+             FROM model_usage m LEFT JOIN session s ON s.id = m.session_id",
+        )
+        .context("prepare model_usage query")?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(Row {
+                started_at: row.get(0)?,
+                model: row.get(1)?,
+                provider: row.get(2)?,
+                session: row.get(3)?,
+                agent: row.get(4)?,
+                input: row.get(5)?,
+                output: row.get(6)?,
+                reasoning: row.get(7)?,
+                cache_write: row.get(8)?,
+                cache_read: row.get(9)?,
+                ttft: row.get(10)?,
+                title: row.get(11)?,
+            })
+        })
+        .context("query model_usage")?;
+    let mut records = Vec::new();
+    for row in rows {
+        let row = row.context("one model_usage row")?;
+        let ts_ms = row.started_at;
+        // ZCode's input_tokens is gross: the cache reads are inside it.
+        let input_net = row.input.saturating_sub(row.cache_read);
+        records.push(UsageRecord {
+            source: "zcode".into(),
+            session: row.session,
+            session_title: row.title,
+            provider: row.provider,
+            model_key: ctx.key(&row.model),
+            model_raw: row.model,
+            ts_ms,
+            input_net,
+            cache_read: row.cache_read,
+            cache_write: row.cache_write,
+            output: row.output,
+            reasoning: row.reasoning,
+            ttft_ms: row.ttft,
+            agent: row.agent,
+        });
+    }
+    Ok(records)
+}
+
+struct Row {
+    started_at: i64,
+    model: String,
+    provider: Option<String>,
+    session: String,
+    agent: Option<String>,
+    input: u64,
+    output: u64,
+    reasoning: u64,
+    cache_write: u64,
+    cache_read: u64,
+    ttft: Option<u64>,
+    title: Option<String>,
+}
