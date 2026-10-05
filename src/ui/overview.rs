@@ -103,25 +103,46 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
             icon: IconName::MessageSquare,
         },
     ];
-    let grid = div().flex().flex_wrap().gap_3().children(
-        tiles
-            .into_iter()
-            .enumerate()
-            .map(|(ix, tile)| {
-                let mut stat = Statistic::new(("kpi", ix), tile.name, tile.value).decimals(0);
-                if let Some(prefix) = tile.prefix {
-                    stat = stat.prefix(prefix);
-                }
-                if tile.percent {
-                    stat = stat.decimals(1).suffix("%");
-                }
-                div()
-                    .id(("kpi-tile", ix))
-                    .w(px(344.))
-                    .tooltip(Tooltip::with_meta(tile.name.to_string(), tile.tip))
-                    .child(KpiCard::new(stat).icon(tile.icon))
-            }),
-    );
+    // Three rows of three, each tile flexing to a third of the row: the
+    // count above must stay a multiple of three or the grid comes out ragged.
+    let grid = div().flex().flex_col().gap_3().children((0..3).map(|row| {
+        div().flex().gap_3().children((0..3).map(|col| {
+            let ix = row * 3 + col;
+            let tile = &tiles[ix];
+            let mut stat = Statistic::new(("kpi", ix), tile.name, tile.value).decimals(0);
+            if let Some(prefix) = tile.prefix {
+                stat = stat.prefix(prefix);
+            }
+            if tile.percent {
+                stat = stat.decimals(1).suffix("%");
+            }
+            let (name, tip) = (tile.name, tile.tip.clone());
+            div()
+                .id(("kpi-tile", ix))
+                .flex_1()
+                .min_w_0()
+                // with_meta lays title and hint on one row, which ellipsizes a
+                // sentence; rich + a column lets the tip wrap inside the cap.
+                .tooltip(Tooltip::rich(move |_, cx| {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .child(name),
+                        )
+                        .child(
+                            div()
+                                .text_color(cx.theme().colors.tooltip_fg.opacity(0.6))
+                                .child(tip.clone()),
+                        )
+                        .into_any_element()
+                }))
+                .child(KpiCard::new(stat).icon(tile.icon))
+        }))
+    }));
     div()
         .flex()
         .flex_col()
