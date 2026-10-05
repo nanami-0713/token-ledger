@@ -269,3 +269,61 @@ pub fn run(page: usize, dark: bool) -> anyhow::Result<()> {
         });
     Ok(())
 }
+
+/// A bare window with one gallery-shaped chart, for bisecting axis issues.
+#[allow(dead_code)]
+struct Bare;
+
+#[allow(dead_code)]
+impl Render for Bare {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        use ely_gpui_component::charts::{LineChart, Series};
+        div()
+            .p_8()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(div().child("plain 1234.56"))
+            .child(
+                // A word-for-word copy of Ely's beside(): absolute, left 0,
+                // a y offset, the gutter width, zero height, centered.
+                div()
+                    .relative()
+                    .w(px(980.))
+                    .h(px(28.))
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .top(px(14.0))
+                            .w(px(48.0))
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .pr_2()
+                            .child("ABS99"),
+                    )
+                    .child(div().absolute().left(px(60.)).top(px(7.)).child("PLAINABS99")),
+            )
+            .child(
+                div().w(px(980.)).child(
+                    LineChart::new(
+                        "bare",
+                        [
+                            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct",
+                            "Nov", "Dec",
+                        ],
+                    )
+                    .series(Series::new(
+                        "Revenue",
+                        vec![
+                            42.0, 55.0, 51.0, 68.0, 74.0, 71.0, 88.0, 95.0, 91.0, 104.0, 112.0,
+                            119.0,
+                        ],
+                    ))
+                    .smooth()
+                    .format(|value| format!("${value:.0}k")),
+                ),
+            )
+    }
+}
