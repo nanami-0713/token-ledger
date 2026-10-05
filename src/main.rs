@@ -6,11 +6,22 @@ use core::aggregate::{self, Totals};
 use core::sources::{self, Config};
 
 fn main() -> anyhow::Result<()> {
-    let smoke = std::env::args().any(|arg| arg == "--smoke");
+    let mut smoke = false;
+    let mut page = 0;
+    let mut dark = false;
+    let mut args = std::env::args().skip(1);
+    while let Some(flag) = args.next() {
+        match flag.as_str() {
+            "--smoke" => smoke = true,
+            "--page" => page = args.next().and_then(|v| v.parse().ok()).unwrap_or(0),
+            "--dark" => dark = true,
+            _ => {}
+        }
+    }
     if smoke {
         return smoke_main();
     }
-    ui::run()
+    ui::run(page, dark)
 }
 
 /// Print the whole ledger to stdout: the cross-GUI merge, proven on real data.

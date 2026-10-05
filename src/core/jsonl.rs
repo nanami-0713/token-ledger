@@ -187,12 +187,6 @@ fn scan_file(path: &Path, query: &JsonlQuery, records: &mut Vec<UsageRecord>) {
     }
 }
 
-impl JsonlQuery<'_> {
-    fn model_field(&self) -> &str {
-        self.model.unwrap_or("model")
-    }
-}
-
 /// DeepSeek Harness: `~/.dsh/sessions/<workdir-slug>/session-<uuid>/session.jsonl.zstd`,
 /// usage riding on `data.chunk.usage` chunks, the model stated per turn.
 pub fn scan_dsh(root: &Path, ctx: &super::sources::ScanCtx) -> (Vec<UsageRecord>, usize) {
