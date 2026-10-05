@@ -19,6 +19,7 @@ cat > "$BUNDLE/Contents/Info.plist" <<'PLIST'
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key><string>TokenLedger</string>
+    <key>CFBundleIconFile</key><string>TokenLedger</string>
     <key>CFBundleIdentifier</key><string>com.nanami.token-ledger</string>
     <key>CFBundleName</key><string>TokenLedger</string>
     <key>CFBundleDisplayName</key><string>TokenLedger</string>
