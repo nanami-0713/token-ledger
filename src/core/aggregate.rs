@@ -23,6 +23,7 @@ pub struct Totals {
     pub errors: u64,
     pub retries: u64,
     pub duration_ms: u64,
+    pub tool_calls: u64,
 }
 
 impl Totals {
@@ -42,6 +43,7 @@ impl Totals {
         self.errors += rec.failed as u64;
         self.retries += rec.retry as u64;
         self.duration_ms += rec.duration_ms.unwrap_or(0);
+        self.tool_calls += rec.tool_calls;
     }
 
     pub fn cache_hit_rate(&self) -> Option<f64> {
@@ -139,6 +141,8 @@ pub struct ModelRow {
     pub model: String,
     pub sources: Vec<String>,
     pub totals: Totals,
+    /// Output tokens a second over the model's recorded wall time.
+    pub tps: Option<f64>,
 }
 
 /// Everything the pages show, computed once per scan. Pages re-render off
@@ -171,6 +175,38 @@ pub struct Ledger {
     pub recent_tps: Vec<(String, f64)>,
     pub models_rows: Vec<ModelRow>,
     pub sessions: Vec<SessionRow>,
+    /// Tool wall time, from sources that keep a tool ledger.
+    pub tool_ms: u64,
+}
+
+/// A lookback window for the per-model pages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Span {
+    Day,
+    Week,
+    Month,
+    All,
+}
+
+impl Span {
+    pub const ALL: [Span; 4] = [Span::Day, Span::Week, Span::Month, Span::All];
+    pub fn label(self) -> &'static str {
+        match self {
+            Span::Day => "1D",
+            Span::Week => "7D",
+            Span::Month => "30D",
+            Span::All => "All",
+        }
+    }
+    pub fn cutoff_ms(self, now_ms: i64) -> Option<i64> {
+        let days = match self {
+            Span::Day => 1,
+            Span::Week => 7,
+            Span::Month => 30,
+            Span::All => return None,
+        };
+        Some(now_ms - days * 24 * 3600 * 1000)
+    }
 }
 
 /// Rows in the hour-by-day heatmap.
@@ -179,7 +215,7 @@ const HOURLY_ROWS: usize = 14;
 const TPS_SESSIONS: usize = 30;
 
 impl Ledger {
-    pub fn build(records: &[UsageRecord], billing: &Billing) -> Self {
+    pub fn build(records: &[UsageRecord], billing: &Billing, tool_ms: u64) -> Self {
         let mut totals = Totals::default();
         let today = jiff::Zoned::now().strftime("%Y-%m-%d").to_string();
         let today_ms = jiff::Zoned::now().timestamp().as_millisecond();
@@ -230,6 +266,7 @@ impl Ledger {
                     model: model.clone(),
                     sources: by_source.keys().cloned().collect(),
                     totals: Totals::default(),
+                    tps: None,
                 };
                 for totals in by_source.values() {
                     row.totals.requests += totals.requests;
@@ -237,11 +274,15 @@ impl Ledger {
                     row.totals.cache_read += totals.cache_read;
                     row.totals.output += totals.output;
                     row.totals.credits += totals.credits;
+                    row.totals.duration_ms += totals.duration_ms;
                     row.totals.cost_cny = match (row.totals.cost_cny, totals.cost_cny) {
                         (Some(a), Some(b)) => Some(a + b),
                         (a, b) => a.or(b),
                     };
                 }
+                row.tps = (row.totals.duration_ms > 0).then(|| {
+                    row.totals.output as f64 / (row.totals.duration_ms as f64 / 1000.0)
+                });
                 row
             })
             .collect();
@@ -337,6 +378,7 @@ impl Ledger {
             recent_tps,
             models_rows,
             sessions,
+            tool_ms,
         }
     }
 }

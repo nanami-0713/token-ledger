@@ -28,7 +28,12 @@ fn main() -> anyhow::Result<()> {
 fn smoke_main() -> anyhow::Result<()> {
     let config = Config::load();
     let billing = config.billing();
-    let (records, statuses) = sources::scan_all(&config);
+    let (records, statuses, extras) = sources::scan_all(&config);
+    println!(
+        "tool calls: {} totaling {:.1}h",
+        records.iter().map(|rec| rec.tool_calls).sum::<u64>(),
+        extras.tool_ms as f64 / 3_600_000.0
+    );
     println!("== sources ==");
     for status in &statuses {
         println!(

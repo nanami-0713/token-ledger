@@ -20,7 +20,7 @@ pub fn scan(db: &Path, ctx: &super::sources::ScanCtx) -> anyhow::Result<Vec<Usag
                     m.input_tokens, m.output_tokens, m.reasoning_tokens,
                     m.cache_creation_input_tokens, m.cache_read_input_tokens,
                     m.time_to_first_token_ms, m.status, m.attempt_index,
-                    m.duration_ms, s.title
+                    m.duration_ms, m.tool_call_count, s.title
              FROM model_usage m LEFT JOIN session s ON s.id = m.session_id",
         )
         .context("prepare model_usage query")?;
@@ -41,7 +41,8 @@ pub fn scan(db: &Path, ctx: &super::sources::ScanCtx) -> anyhow::Result<Vec<Usag
                 status: row.get(11)?,
                 attempt: row.get(12)?,
                 duration: row.get(13)?,
-                title: row.get(14)?,
+                tools: row.get(14)?,
+                title: row.get(15)?,
             })
         })
         .context("query model_usage")?;
@@ -69,9 +70,24 @@ pub fn scan(db: &Path, ctx: &super::sources::ScanCtx) -> anyhow::Result<Vec<Usag
             failed: row.status == "error",
             retry: row.attempt > 0,
             duration_ms: row.duration,
+            tool_calls: row.tools,
         });
     }
     Ok(records)
+}
+
+/// Calls and wall time from the tool ledger, which has no per-request join.
+pub fn tool_stats(db: &Path) -> anyhow::Result<(u64, u64)> {
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let db = Connection::open_with_flags(db, flags).context("open db read-only")?;
+    let row = db
+        .query_row(
+            "SELECT count(*), coalesce(sum(duration_ms), 0) FROM tool_usage",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .context("query tool_usage")?;
+    Ok((row.0.max(0) as u64, row.1.max(0) as u64))
 }
 
 struct Row {
@@ -89,5 +105,6 @@ struct Row {
     status: String,
     attempt: i64,
     duration: Option<u64>,
+    tools: u64,
     title: Option<String>,
 }

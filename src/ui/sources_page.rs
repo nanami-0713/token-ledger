@@ -1,11 +1,17 @@
+use ely_gpui_component::buttons::{Button, ButtonVariant};
 use ely_gpui_component::forms::Switch;
+use ely_gpui_component::primitives::IconName;
 use ely_gpui_component::theme::ActiveTheme;
-use gpui::{Context, ElementId, InteractiveElement, IntoElement, ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, div, px, rems};
+use gpui::{
+    AppContext as _, AsyncApp, Context, ElementId, InteractiveElement, IntoElement, ParentElement,
+    PathPromptOptions, SharedString, StatefulInteractiveElement, Styled, Window, div, px, rems,
+};
 
 use super::LedgerApp;
 
 /// What the ledger read and what it did not find: each source with its
-/// standing, plus the door for sources the config adds.
+/// standing, a folder picker that wires in any tool whose logs match a
+/// known shape, and the config door for everything else.
 pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<LedgerApp>) -> gpui::Div {
     let entity = cx.entity();
     let theme = cx.theme();
@@ -76,6 +82,48 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
         .child(
             div()
                 .mt_6()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(
+                    Button::new("add-folder", "Add a folder of logs…")
+                        .icon(IconName::FolderPlus)
+                        .variant(ButtonVariant::Primary)
+                        .on_click({
+                            let entity = entity.clone();
+                            move |_, _, cx| {
+                                let picked = cx.prompt_for_paths(PathPromptOptions {
+                                    files: false,
+                                    directories: true,
+                                    multiple: false,
+                                    prompt: None,
+                                });
+                                let entity = entity.clone();
+                                cx.spawn(async move |cx: &mut AsyncApp| {
+                                    if let Ok(Ok(Some(paths))) = picked.await {
+                                        if let Some(dir) = paths.first() {
+                                            cx.update(|cx| {
+                                                entity.update(cx, |app, cx| {
+                                                    app.add_folder(dir.clone(), cx);
+                                                });
+                                            });
+                                        }
+                                    }
+                                })
+                                .detach();
+                            }
+                        }),
+                )
+                .children(app.folder_note.clone().map(|note| {
+                    div()
+                        .text_size(rems(0.85))
+                        .text_color(theme.colors.fg_muted)
+                        .child(note)
+                })),
+        )
+        .child(
+            div()
+                .mt_4()
                 .p_4()
                 .rounded(theme.radius(ely_gpui_component::theme::Radius::Md))
                 .border_1()
@@ -86,16 +134,17 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
                 .child(
                     div()
                         .font_weight(gpui::FontWeight::MEDIUM)
-                        .child("Add any other tool"),
+                        .child("Any other tool"),
                 )
                 .child(
                     div()
                         .text_size(rems(0.85))
                         .text_color(theme.colors.fg_muted)
                         .child(format!(
-                            "A source is a few lines in {}. Point a glob at any JSONL log, name the \
-                             fields that carry the model, the time, the input and the output, and \
-                             its calls join the same ledgers as the built-ins.",
+                            "The picker recognizes Claude Code, DSH, Codex and OpenAI-response \
+                             shapes on its own. Anything else is a few lines in {}: point a glob \
+                             at any JSONL log and name the fields that carry the model, the time, \
+                             the input and the output.",
                             config_path.display()
                         )),
                 ),

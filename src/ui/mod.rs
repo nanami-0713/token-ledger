@@ -13,9 +13,10 @@ use gpui::{
     InteractiveElement, StatefulInteractiveElement,
 };
 
-use crate::core::aggregate::Ledger;
+use crate::core::aggregate::{Ledger, Span};
 use crate::core::billing::Billing;
-use crate::core::sources::{self, Config, SourceStatus};
+use crate::core::record::UsageRecord;
+use crate::core::sources::{self, Config, ScanExtras, SourceStatus};
 
 actions!(ledger, [Quit]);
 
@@ -31,24 +32,36 @@ pub enum Page {
 pub struct LedgerApp {
     pub config: Config,
     pub billing: Billing,
-    /// One scan's answers, computed once; pages never re-walk records.
+    /// One scan's answers over all history; pages never re-walk records.
     pub ledger: Ledger,
+    /// The same answers inside the models page's lookback window.
+    pub span_ledger: Ledger,
+    pub span: Span,
+    /// The scan's raw records, kept so a window change is a cheap filter.
+    pub records: Vec<UsageRecord>,
+    pub extras: ScanExtras,
     pub statuses: Vec<SourceStatus>,
     pub page: Page,
     pub dark: bool,
     pub scanned_at: String,
+    /// What the last Add-a-folder probe decided, shown on the Sources page.
+    pub folder_note: Option<String>,
 }
 
 impl LedgerApp {
     fn with(page: usize, dark: bool, cx: &mut Context<Self>) -> Self {
         let config = Config::load();
         let billing = config.billing();
-        let (records, statuses) = sources::scan_all(&config);
-        let ledger = Ledger::build(&records, &billing);
+        let (records, statuses, extras) = sources::scan_all(&config);
+        let ledger = Ledger::build(&records, &billing, extras.tool_ms);
         let mut app = Self {
             config,
             billing,
+            span_ledger: ledger.clone(),
             ledger,
+            span: Span::All,
+            records,
+            extras,
             statuses,
             page: match page {
                 1 => Page::Models,
@@ -58,6 +71,7 @@ impl LedgerApp {
             },
             dark: dark || cx.theme().mode() == Mode::Dark,
             scanned_at: now_text(),
+            folder_note: None,
         };
         app.apply_mode(cx);
         app
@@ -65,11 +79,51 @@ impl LedgerApp {
 
     pub fn rescan(&mut self, cx: &mut Context<Self>) {
         self.billing = self.config.billing();
-        let (records, statuses) = sources::scan_all(&self.config);
-        self.ledger = Ledger::build(&records, &self.billing);
+        let (records, statuses, extras) = sources::scan_all(&self.config);
+        self.records = records;
+        self.extras = extras;
+        self.ledger = Ledger::build(&self.records, &self.billing, extras.tool_ms);
+        self.refresh_span();
         self.statuses = statuses;
         self.scanned_at = now_text();
         cx.notify();
+    }
+
+    /// Rebuild the windowed ledger after a span change or a rescan.
+    pub fn refresh_span(&mut self) {
+        let now = jiff::Zoned::now().timestamp().as_millisecond();
+        let cutoff = self.span.cutoff_ms(now);
+        let scoped: Vec<UsageRecord> = match cutoff {
+            Some(cutoff) => self.records.iter().filter(|r| r.ts_ms >= cutoff).cloned().collect(),
+            None => self.records.clone(),
+        };
+        self.span_ledger = Ledger::build(&scoped, &self.billing, self.extras.tool_ms);
+    }
+
+    pub fn set_span(&mut self, span: Span, cx: &mut Context<Self>) {
+        self.span = span;
+        self.refresh_span();
+        cx.notify();
+    }
+
+    /// A folder the picker returned: probe it, and add it when it matches a
+    /// known log shape.
+    pub fn add_folder(&mut self, dir: std::path::PathBuf, cx: &mut Context<Self>) {
+        match sources::probe_folder(&dir) {
+            Some(def) => {
+                self.folder_note = Some(format!("{}: recognized and added", def.label));
+                self.config.source.push(def);
+                self.rescan(cx);
+            }
+            None => {
+                self.folder_note = Some(format!(
+                    "{}: no known log shape found; add it by hand in {}",
+                    dir.display(),
+                    sources::config_path().display()
+                ));
+                cx.notify();
+            }
+        }
     }
 
     pub fn toggle_source(&mut self, id: &str, on: bool, cx: &mut Context<Self>) {
@@ -270,60 +324,3 @@ pub fn run(page: usize, dark: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A bare window with one gallery-shaped chart, for bisecting axis issues.
-#[allow(dead_code)]
-struct Bare;
-
-#[allow(dead_code)]
-impl Render for Bare {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        use ely_gpui_component::charts::{LineChart, Series};
-        div()
-            .p_8()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(div().child("plain 1234.56"))
-            .child(
-                // A word-for-word copy of Ely's beside(): absolute, left 0,
-                // a y offset, the gutter width, zero height, centered.
-                div()
-                    .relative()
-                    .w(px(980.))
-                    .h(px(28.))
-                    .child(
-                        div()
-                            .absolute()
-                            .left_0()
-                            .top(px(14.0))
-                            .w(px(48.0))
-                            .flex()
-                            .items_center()
-                            .justify_end()
-                            .pr_2()
-                            .child("ABS99"),
-                    )
-                    .child(div().absolute().left(px(60.)).top(px(7.)).child("PLAINABS99")),
-            )
-            .child(
-                div().w(px(980.)).child(
-                    LineChart::new(
-                        "bare",
-                        [
-                            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct",
-                            "Nov", "Dec",
-                        ],
-                    )
-                    .series(Series::new(
-                        "Revenue",
-                        vec![
-                            42.0, 55.0, 51.0, 68.0, 74.0, 71.0, 88.0, 95.0, 91.0, 104.0, 112.0,
-                            119.0,
-                        ],
-                    ))
-                    .smooth()
-                    .format(|value| format!("${value:.0}k")),
-                ),
-            )
-    }
-}

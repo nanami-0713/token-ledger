@@ -4,6 +4,15 @@ use gpui::{Context, IntoElement, ParentElement, Styled, Window, div, px, rems};
 
 use super::LedgerApp;
 
+fn human_duration(ms: u64) -> String {
+    let minutes = ms / 60_000;
+    if minutes >= 60 {
+        format!("{:.1}h", minutes as f64 / 60.0)
+    } else {
+        format!("{minutes}m")
+    }
+}
+
 /// The heaviest sessions first: what ran, where, and what it cost.
 pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<LedgerApp>) -> gpui::Div {
     let sessions = &app.ledger.sessions;
@@ -30,6 +39,7 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
                     Cell::Text(session.source.clone().into()),
                     Cell::Text(session.models.join(", ").into()),
                     Cell::Number(session.totals.requests as f64),
+                    Cell::Text(human_duration(session.totals.duration_ms).into()),
                     Cell::Number(tokens as f64),
                     match session.totals.cost_cny {
                         Some(cny) => Cell::Number(cny),
@@ -69,6 +79,7 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
                     Column::new("source", "Source").width(rems(8.)),
                     Column::new("models", "Models").width(rems(16.)),
                     Column::new("requests", "Req").width(rems(6.)).end(),
+                    Column::new("took", "Took").width(rems(8.)).end(),
                     Column::new("tokens", "Tokens").width(rems(10.)).end(),
                     Column::new("cost", "¥ list").width(rems(9.)).end(),
                     Column::new("credits", "Credits").width(rems(9.)).end(),

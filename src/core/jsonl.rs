@@ -186,6 +186,7 @@ fn scan_file(path: &Path, query: &JsonlQuery, records: &mut Vec<UsageRecord>) {
             failed: false,
             retry: false,
             duration_ms: None,
+            tool_calls: 0,
         });
     }
 }

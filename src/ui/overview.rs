@@ -1,138 +1,156 @@
 use ely_gpui_component::charts::{AreaChart, BarChart, CalendarHeatmap, HeatmapChart, LineChart, Series};
 use ely_gpui_component::data_display::{KpiCard, Statistic};
+use ely_gpui_component::primitives::{IconName, Tooltip};
 use ely_gpui_component::theme::ActiveTheme;
-use gpui::{Context, IntoElement, ParentElement, Styled, Window, div, px};
+use gpui::{
+    Context, InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement, Styled,
+    Window, div, px,
+};
 
 use super::LedgerApp;
+use crate::core::aggregate::Ledger;
 
-/// The front page: today's burn, the week, the cache, and the two charts that
-/// tell the whole story — cumulative credits, and daily credits by source.
-/// Everything here reads the scan-time cache; no page re-walks records.
+/// The front page. Tiles carry a name and a number; the long explanation of
+/// each metric waits on its hover. Everything reads the scan-time cache.
 pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<LedgerApp>) -> gpui::Div {
     let ledger = &app.ledger;
     let hit = ledger.totals.cache_hit_rate().unwrap_or(0.0) * 100.0;
+    let tool_hours = ledger.tool_ms as f64 / 3_600_000.0;
+    let tool_tip = format!(
+        "{} tool calls while serving these requests; {:.1}h of tool wall time in total (ZCode's tool ledger)",
+        ledger.totals.tool_calls, tool_hours
+    );
     let theme = cx.theme();
+    struct Tile {
+        name: &'static str,
+        tip: String,
+        value: f64,
+        prefix: Option<&'static str>,
+        percent: bool,
+        icon: IconName,
+    }
+    let tiles = vec![
+        Tile {
+            name: "Today · tokens",
+            tip: "every model call today, every GUI together, prompt and output counted once".into(),
+            value: ledger.today_tokens,
+            prefix: None,
+            percent: false,
+            icon: IconName::Zap,
+        },
+        Tile {
+            name: "7 days · tokens",
+            tip: "the same count over the trailing week".into(),
+            value: ledger.week_tokens,
+            prefix: None,
+            percent: false,
+            icon: IconName::Calendar,
+        },
+        Tile {
+            name: "API list price",
+            tip: "the ledger's tokens priced by each model's official card, in CNY; models without a card are excluded, never guessed".into(),
+            value: ledger.totals.cost_cny.unwrap_or(0.0),
+            prefix: Some("¥"),
+            percent: false,
+            icon: IconName::Wallet,
+        },
+        Tile {
+            name: "Cache hit",
+            tip: "cache reads over all prompt tokens: how much of every prompt the provider already had".into(),
+            value: hit,
+            prefix: None,
+            percent: true,
+            icon: IconName::Database,
+        },
+        Tile {
+            name: "Tool calls",
+            tip: tool_tip,
+            value: ledger.totals.tool_calls as f64,
+            prefix: None,
+            percent: false,
+            icon: IconName::Wrench,
+        },
+        Tile {
+            name: "Plan credits today",
+            tip: "the GLM Coding Plan's own quota unit — one provider's subscription meter, an auxiliary view, never the ledger's unit".into(),
+            value: ledger.today_credits,
+            prefix: None,
+            percent: false,
+            icon: IconName::Gauge,
+        },
+        Tile {
+            name: "Failed",
+            tip: "requests that ended in an error, as a share of the requests whose source reports a status".into(),
+            value: pct(ledger.totals.errors, ledger.totals.status_seen) * 100.0,
+            prefix: None,
+            percent: true,
+            icon: IconName::TriangleAlert,
+        },
+        Tile {
+            name: "Retried",
+            tip: "requests that ran a second attempt after the first one did not land".into(),
+            value: pct(ledger.totals.retries, ledger.totals.status_seen) * 100.0,
+            prefix: None,
+            percent: true,
+            icon: IconName::RefreshCw,
+        },
+        Tile {
+            name: "Tokens a session",
+            tip: "prompt plus output tokens, averaged over every session on record".into(),
+            value: ledger.avg_session_tokens,
+            prefix: None,
+            percent: false,
+            icon: IconName::MessageSquare,
+        },
+    ];
+    let grid = div().flex().flex_wrap().gap_3().children(
+        tiles
+            .into_iter()
+            .enumerate()
+            .map(|(ix, tile)| {
+                let mut stat = Statistic::new(("kpi", ix), tile.name, tile.value).decimals(0);
+                if let Some(prefix) = tile.prefix {
+                    stat = stat.prefix(prefix);
+                }
+                if tile.percent {
+                    stat = stat.decimals(1).suffix("%");
+                }
+                div()
+                    .id(("kpi-tile", ix))
+                    .w(px(344.))
+                    .tooltip(Tooltip::with_meta(tile.name.to_string(), tile.tip))
+                    .child(KpiCard::new(stat).icon(tile.icon))
+            }),
+    );
     div()
         .flex()
         .flex_col()
         .gap_6()
         .max_w(px(1080.))
-        .child(
-            div()
-                .flex()
-                .flex_wrap()
-                .gap_4()
-                .child(
-                    KpiCard::new(
-                        Statistic::new("kpi-today", "Today · tokens", ledger.today_tokens)
-                            .decimals(0),
-                    )
-                    .icon(ely_gpui_component::primitives::IconName::Zap)
-                    .caption("every model call today, every GUI together"),
-                )
-                .child(
-                    KpiCard::new(
-                        Statistic::new("kpi-week", "Last 7 days · tokens", ledger.week_tokens)
-                            .decimals(0),
-                    )
-                    .icon(ely_gpui_component::primitives::IconName::Calendar)
-                    .caption("one window, all sources"),
-                )
-                .child(
-                    KpiCard::new(
-                        Statistic::new(
-                            "kpi-cost",
-                            "API list price",
-                            ledger.totals.cost_cny.unwrap_or(0.0),
-                        )
-                        .decimals(0)
-                        .prefix("¥"),
-                    )
-                    .icon(ely_gpui_component::primitives::IconName::Wallet)
-                    .caption("tokens × per-model price cards, priced models only"),
-                )
-                .child(
-                    KpiCard::new(
-                        Statistic::new("kpi-cache", "Cache hit", hit as f64)
-                            .decimals(1)
-                            .suffix("%"),
-                    )
-                    .icon(ely_gpui_component::primitives::IconName::Database)
-                    .caption("cache reads over all prompt tokens"),
-                ),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_wrap()
-                .gap_4()
-                .child(
-                    KpiCard::new(
-                        Statistic::new(
-                            "kpi-credits",
-                            "Plan credits today",
-                            ledger.today_credits,
-                        )
-                        .decimals(0),
-                    )
-                    .icon(ely_gpui_component::primitives::IconName::Gauge)
-                    .caption("GLM Coding Plan only — one provider's quota unit, an auxiliary view"),
-                )
-                .child(
-                    KpiCard::new(
-                        Statistic::new(
-                            "kpi-avg-session",
-                            "Tokens a session",
-                            ledger.avg_session_tokens,
-                        )
-                        .decimals(0),
-                    )
-                    .icon(ely_gpui_component::primitives::IconName::MessageSquare)
-                    .caption("prompt + output, averaged over every session"),
-                )
-                .child(
-                    KpiCard::new(
-                        Statistic::new(
-                            "kpi-errors",
-                            "Failed",
-                            pct(ledger.totals.errors, ledger.totals.status_seen) * 100.0,
-                        )
-                        .decimals(1)
-                        .suffix("%"),
-                    )
-                    .icon(ely_gpui_component::primitives::IconName::TriangleAlert)
-                    .caption("requests that ended in an error, of the status-reporting ones"),
-                )
-                .child(
-                    KpiCard::new(
-                        Statistic::new(
-                            "kpi-retries",
-                            "Retried",
-                            pct(ledger.totals.retries, ledger.totals.status_seen) * 100.0,
-                        )
-                        .decimals(1)
-                        .suffix("%"),
-                    )
-                    .icon(ely_gpui_component::primitives::IconName::RefreshCw)
-                    .caption("requests that ran a second attempt"),
-                ),
-        )
-        .child(section(
-            "The last thirty conversations, tokens a second",
-            theme.colors.fg_muted,
-            div().w(px(1080.)).child(
-                BarChart::new("recent-tps", ledger.recent_tps.iter().map(|(label, _)| label.clone()).collect::<Vec<_>>())
-                    .series(Series::new(
-                        "tokens/s",
-                        ledger.recent_tps.iter().map(|(_, tps)| *tps).collect::<Vec<_>>(),
-                    ))
-                    .format(|value| format!("{value:.0}")),
-            ),
-        ))
+        .child(grid)
         .child(section(
             "Tokens per day, by source",
             theme.colors.fg_muted,
             div().w(px(980.)).child(by_source_chart(ledger)),
+        ))
+        .child(section(
+            "The last thirty conversations, tokens a second",
+            theme.colors.fg_muted,
+            div().w(px(1080.)).child(
+                BarChart::new(
+                    "recent-tps",
+                    ledger
+                        .recent_tps
+                        .iter()
+                        .map(|(label, _)| label.clone())
+                        .collect::<Vec<_>>(),
+                )
+                .series(Series::new(
+                    "tokens/s",
+                    ledger.recent_tps.iter().map(|(_, tps)| *tps).collect::<Vec<_>>(),
+                ))
+                .format(|value| format!("{value:.0}")),
+            ),
         ))
         .child(section(
             "Cumulative tokens",
@@ -160,20 +178,17 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
             "Where the tokens go",
             theme.colors.fg_muted,
             div().w(px(680.)).child(
-                BarChart::new(
-                    "token-mix",
-                    ["Cache reads", "Fresh input", "Output"],
-                )
-                .series(Series::new(
-                    "Tokens",
-                    vec![
-                        ledger.totals.cache_read as f64,
-                        ledger.totals.input_net as f64,
-                        ledger.totals.output as f64,
-                    ],
-                ))
-                .horizontal()
-                .format(|value| human_tokens(value as u64)),
+                BarChart::new("token-mix", ["Cache reads", "Fresh input", "Output"])
+                    .series(Series::new(
+                        "Tokens",
+                        vec![
+                            ledger.totals.cache_read as f64,
+                            ledger.totals.input_net as f64,
+                            ledger.totals.output as f64,
+                        ],
+                    ))
+                    .horizontal()
+                    .format(|value| human_f64(value)),
             ),
         ))
         .child(
@@ -181,7 +196,7 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
                 .text_size(gpui::rems(0.8))
                 .text_color(theme.colors.fg_muted)
                 .child(format!(
-                    "{} days on record · cache {} of {} prompt tokens · {:.1}M output tokens · API list price \u{a5}{} (priced models)",
+                    "{} days on record · cache {} of {} prompt tokens · {:.1}M output tokens · API list price ¥{} (priced models)",
                     ledger.days.len(),
                     human_tokens(ledger.totals.cache_read),
                     human_tokens(ledger.totals.cache_read + ledger.totals.input_net),
@@ -197,7 +212,7 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
 
 /// One stacked area per source that actually has data — a chart series
 /// without a value per label is a panic, so absent sources stay absent.
-fn by_source_chart(ledger: &crate::core::aggregate::Ledger) -> impl IntoElement {
+fn by_source_chart(ledger: &Ledger) -> impl IntoElement {
     const NAMES: [(&str, &str); 4] = [
         ("zcode", "ZCode"),
         ("codex", "ChatGPT"),
@@ -216,9 +231,8 @@ fn by_source_chart(ledger: &crate::core::aggregate::Ledger) -> impl IntoElement 
 }
 
 /// Fourteen rows, one a day, twenty-four columns, one an hour: when the
-/// machine actually burns its quota. Rows without data stay as empty grids
-/// rather than panicking the chart.
-fn hourly_chart(ledger: &crate::core::aggregate::Ledger) -> impl IntoElement {
+/// machine actually burns its quota.
+fn hourly_chart(ledger: &Ledger) -> impl IntoElement {
     let hours: Vec<String> = (0..24).map(|hour| format!("{hour:02}")).collect();
     let mut chart = HeatmapChart::new("hourly", hours);
     for (day, row) in &ledger.hourly {
@@ -255,14 +269,6 @@ fn human_f64(value: f64) -> String {
     }
 }
 
-fn pct(part: u64, whole: u64) -> f64 {
-    if whole == 0 {
-        0.0
-    } else {
-        part as f64 / whole as f64
-    }
-}
-
 fn human_tokens(value: u64) -> String {
     if value >= 1_000_000_000 {
         format!("{:.2}B", value as f64 / 1e9)
@@ -270,5 +276,13 @@ fn human_tokens(value: u64) -> String {
         format!("{:.1}M", value as f64 / 1e6)
     } else {
         format!("{value}")
+    }
+}
+
+fn pct(part: u64, whole: u64) -> f64 {
+    if whole == 0 {
+        0.0
+    } else {
+        part as f64 / whole as f64
     }
 }

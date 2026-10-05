@@ -25,6 +25,8 @@ pub struct UsageRecord {
     pub failed: bool,
     /// The request ran again after a first attempt.
     pub retry: bool,
+    /// Tool calls made while serving this request, when the source counts them.
+    pub tool_calls: u64,
     /// Wall time the provider took, when the source records it.
     pub duration_ms: Option<u64>,
 }

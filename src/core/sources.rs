@@ -214,9 +214,16 @@ impl ScanCtx {
     }
 }
 
+/// Tool time the per-request records cannot carry, from sources that keep a
+/// separate tool ledger.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ScanExtras {
+    pub tool_ms: u64,
+}
+
 /// Scan every enabled source. A broken source reports itself and gets out of
 /// the way; the rest of the ledger still loads.
-pub fn scan_all(config: &Config) -> (Vec<UsageRecord>, Vec<SourceStatus>) {
+pub fn scan_all(config: &Config) -> (Vec<UsageRecord>, Vec<SourceStatus>, ScanExtras) {
     let ctx = ScanCtx {
         aliases: config.aliases.clone(),
     };
@@ -252,7 +259,127 @@ pub fn scan_all(config: &Config) -> (Vec<UsageRecord>, Vec<SourceStatus>) {
         }
     }
     records.sort_by_key(|rec| rec.ts_ms);
-    (records, statuses)
+    let mut extras = ScanExtras::default();
+    for def in &config.source {
+        if let (true, SourceKind::Zcode { db }) = (def.enabled, &def.kind) {
+            if let Ok((_, ms)) = super::zcode::tool_stats(&expand_tilde(db)) {
+                extras.tool_ms += ms;
+            }
+        }
+    }
+    (records, statuses, extras)
+}
+
+/// Read a folder's logs and guess which shape they are, so "Add a folder"
+/// can wire a new tool in one press. Known shapes only; anything else stays
+/// a manual `config.toml` entry.
+pub fn probe_folder(dir: &std::path::Path) -> Option<SourceDef> {
+    let mut sample: Option<(bool, String)> = None; // (zstd, one line)
+    for (pattern, zstd) in [
+        (format!("{}/**/*.jsonl.zstd", dir.display()), true),
+        (format!("{}/**/*.jsonl", dir.display()), false),
+    ] {
+        for entry in glob::glob(&pattern).ok()? {
+            let Ok(path) = entry else { continue };
+            let mut text = String::new();
+            if zstd {
+                let Ok(file) = std::fs::File::open(&path) else { continue };
+                let reader =
+                    zstd::stream::read::Decoder::new(file).ok()?;
+                use std::io::BufRead;
+                let _ = std::io::BufReader::new(reader).read_line(&mut text);
+            } else {
+                use std::io::BufRead;
+                let _ = std::io::BufReader::new(std::fs::File::open(&path).ok()?).read_line(&mut text);
+            }
+            if !text.trim().is_empty() {
+                sample = Some((zstd, text));
+                break;
+            }
+        }
+        if sample.is_some() {
+            break;
+        }
+    }
+    let (zstd, line) = sample?;
+    let value: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+    let dig = |path: &str| {
+        let mut at = &value;
+        for key in path.split('.') {
+            at = at.get(key)?;
+        }
+        Some(at)
+    };
+    let label = dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("folder")
+        .to_string();
+    let id = format!(
+        "folder-{}",
+        label.to_lowercase().replace(|c: char| !c.is_ascii_alphanumeric(), "-")
+    );
+    let kind = if dig("message.usage.input_tokens").is_some() {
+        SourceKind::Jsonl {
+            paths: vec![format!("{}/**/*.jsonl", dir.display())],
+            zstd: false,
+            input_includes_cache: false,
+            model: Some("message.model".into()),
+            sticky_model: false,
+            time: "timestamp".into(),
+            input: "message.usage.input_tokens".into(),
+            output: "message.usage.output_tokens".into(),
+            cache_read: Some("message.usage.cache_read_input_tokens".into()),
+            cache_write: Some("message.usage.cache_creation_input_tokens".into()),
+        }
+    } else if dig("data.chunk.usage.inputTokens").is_some() {
+        SourceKind::Jsonl {
+            paths: vec![format!("{}/**/session.jsonl.zstd", dir.display())],
+            zstd: true,
+            input_includes_cache: true,
+            model: Some("data.model".into()),
+            sticky_model: true,
+            time: "time".into(),
+            input: "data.chunk.usage.inputTokens".into(),
+            output: "data.chunk.usage.outputTokens".into(),
+            cache_read: Some("data.chunk.usage.cacheReadTokens".into()),
+            cache_write: None,
+        }
+    } else if dig("payload.info.last_token_usage.input_tokens").is_some() {
+        SourceKind::Jsonl {
+            paths: vec![format!("{}/**/*.jsonl", dir.display())],
+            zstd: false,
+            input_includes_cache: true,
+            model: Some("payload.model".into()),
+            sticky_model: true,
+            time: "timestamp".into(),
+            input: "payload.info.last_token_usage.input_tokens".into(),
+            output: "payload.info.last_token_usage.output_tokens".into(),
+            cache_read: Some("payload.info.last_token_usage.cached_input_tokens".into()),
+            cache_write: None,
+        }
+    } else if dig("usage.input_tokens").is_some() {
+        SourceKind::Jsonl {
+            paths: vec![format!("{}/**/*.jsonl", dir.display())],
+            zstd: false,
+            input_includes_cache: true,
+            model: Some("model".into()),
+            sticky_model: true,
+            time: if dig("created_at").is_some() { "created_at".into() } else { "timestamp".into() },
+            input: "usage.input_tokens".into(),
+            output: "usage.output_tokens".into(),
+            cache_read: Some("usage.input_token_details.cached_tokens".into()),
+            cache_write: None,
+        }
+    } else {
+        return None;
+    };
+    Some(SourceDef {
+        id,
+        label,
+        enabled: true,
+        kind,
+    })
 }
 
 fn detail_for(def: &SourceDef, found: &[UsageRecord]) -> String {
