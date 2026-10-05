@@ -26,6 +26,13 @@ Three ledgers side by side, on every view:
 
 ## Run it
 
+**Download** — grab `TokenLedger-…-macos-applesilicon.zip` from
+[Releases](https://github.com/nanami-0713/token-ledger/releases), unzip,
+then right-click the app → **Open** the first time (it is ad-hoc signed,
+so Gatekeeper wants one confirmation). macOS 13+, Apple Silicon.
+
+**Build it** —
+
 ```sh
 cargo run                # the window (dev)
 cargo run -- --smoke     # the whole ledger, printed to stdout
