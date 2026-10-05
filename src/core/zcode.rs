@@ -19,7 +19,8 @@ pub fn scan(db: &Path, ctx: &super::sources::ScanCtx) -> anyhow::Result<Vec<Usag
             "SELECT m.started_at, m.model_id, m.provider_id, m.session_id, m.agent,
                     m.input_tokens, m.output_tokens, m.reasoning_tokens,
                     m.cache_creation_input_tokens, m.cache_read_input_tokens,
-                    m.time_to_first_token_ms, s.title
+                    m.time_to_first_token_ms, m.status, m.attempt_index,
+                    m.duration_ms, s.title
              FROM model_usage m LEFT JOIN session s ON s.id = m.session_id",
         )
         .context("prepare model_usage query")?;
@@ -37,7 +38,10 @@ pub fn scan(db: &Path, ctx: &super::sources::ScanCtx) -> anyhow::Result<Vec<Usag
                 cache_write: row.get(8)?,
                 cache_read: row.get(9)?,
                 ttft: row.get(10)?,
-                title: row.get(11)?,
+                status: row.get(11)?,
+                attempt: row.get(12)?,
+                duration: row.get(13)?,
+                title: row.get(14)?,
             })
         })
         .context("query model_usage")?;
@@ -62,6 +66,9 @@ pub fn scan(db: &Path, ctx: &super::sources::ScanCtx) -> anyhow::Result<Vec<Usag
             reasoning: row.reasoning,
             ttft_ms: row.ttft,
             agent: row.agent,
+            failed: row.status == "error",
+            retry: row.attempt > 0,
+            duration_ms: row.duration,
         });
     }
     Ok(records)
@@ -79,5 +86,8 @@ struct Row {
     cache_write: u64,
     cache_read: u64,
     ttft: Option<u64>,
+    status: String,
+    attempt: i64,
+    duration: Option<u64>,
     title: Option<String>,
 }

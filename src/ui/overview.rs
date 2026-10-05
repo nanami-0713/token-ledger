@@ -28,7 +28,7 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
                             .decimals(0),
                     )
                     .icon(ely_gpui_component::primitives::IconName::Zap)
-                    .caption("plan credits burned today, every GUI together"),
+                    .caption("plan credits today — the GLM Coding Plan quota unit, every GUI together"),
                 )
                 .child(
                     KpiCard::new(
@@ -55,6 +55,62 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
                     .caption("cache reads over all prompt tokens"),
                 ),
         )
+        .child(
+            div()
+                .flex()
+                .flex_wrap()
+                .gap_4()
+                .child(
+                    KpiCard::new(
+                        Statistic::new(
+                            "kpi-avg-session",
+                            "Tokens a session",
+                            ledger.avg_session_tokens,
+                        )
+                        .decimals(0),
+                    )
+                    .icon(ely_gpui_component::primitives::IconName::MessageSquare)
+                    .caption("prompt + output, averaged over every session"),
+                )
+                .child(
+                    KpiCard::new(
+                        Statistic::new(
+                            "kpi-errors",
+                            "Failed",
+                            pct(ledger.totals.errors, ledger.totals.status_seen) * 100.0,
+                        )
+                        .decimals(1)
+                        .suffix("%"),
+                    )
+                    .icon(ely_gpui_component::primitives::IconName::TriangleAlert)
+                    .caption("requests that ended in an error, of the status-reporting ones"),
+                )
+                .child(
+                    KpiCard::new(
+                        Statistic::new(
+                            "kpi-retries",
+                            "Retried",
+                            pct(ledger.totals.retries, ledger.totals.status_seen) * 100.0,
+                        )
+                        .decimals(1)
+                        .suffix("%"),
+                    )
+                    .icon(ely_gpui_component::primitives::IconName::RefreshCw)
+                    .caption("requests that ran a second attempt"),
+                ),
+        )
+        .child(section(
+            "The last thirty conversations, tokens a second",
+            theme.colors.fg_muted,
+            div().w(px(1080.)).child(
+                BarChart::new("recent-tps", ledger.recent_tps.iter().map(|(label, _)| label.clone()).collect::<Vec<_>>())
+                    .series(Series::new(
+                        "tokens/s",
+                        ledger.recent_tps.iter().map(|(_, tps)| *tps).collect::<Vec<_>>(),
+                    ))
+                    .format(|value| format!("{value:.0}")),
+            ),
+        ))
         .child(section(
             "Credits per day, by source",
             theme.colors.fg_muted,
@@ -70,7 +126,7 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
             ),
         ))
         .child(section(
-            "Credits per day, a tile a day",
+            "A year of credits, a tile a day",
             theme.colors.fg_muted,
             div().w(px(980.)).child(
                 CalendarHeatmap::new("calendar", ledger.calendar.0, ledger.calendar.1.clone())
@@ -167,6 +223,14 @@ fn section(title: &str, muted: gpui::Hsla, chart: gpui::Div) -> impl IntoElement
                 .child(title.to_string()),
         )
         .child(chart)
+}
+
+fn pct(part: u64, whole: u64) -> f64 {
+    if whole == 0 {
+        0.0
+    } else {
+        part as f64 / whole as f64
+    }
 }
 
 fn human_tokens(value: u64) -> String {

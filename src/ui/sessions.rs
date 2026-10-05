@@ -36,6 +36,10 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
                         Some(cny) => Cell::Number(cny),
                         None => Cell::from(""),
                     },
+                    match session.tps() {
+                        Some(tps) => Cell::Number(tps),
+                        None => Cell::from(""),
+                    },
                     Cell::Text(when.into()),
                 ],
             )
@@ -68,6 +72,7 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
                     Column::new("tokens", "Tokens").width(rems(10.)).end(),
                     Column::new("credits", "Credits").width(rems(9.)).end(),
                     Column::new("cost", "\u{a5} list").width(rems(9.)).end(),
+                    Column::new("tps", "Tok/s").width(rems(7.)).end(),
                     Column::new("first", "First seen").width(rems(10.)),
                 ],
             )

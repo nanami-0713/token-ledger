@@ -17,6 +17,12 @@ pub struct Totals {
     pub reasoning: u64,
     pub credits: f64,
     pub cost_cny: Option<f64>,
+    /// Requests whose source reports a status at all, the denominator of the
+    /// health ratios; streamed logs that never mention one stay out.
+    pub status_seen: u64,
+    pub errors: u64,
+    pub retries: u64,
+    pub duration_ms: u64,
 }
 
 impl Totals {
@@ -30,6 +36,12 @@ impl Totals {
         self.credits += billing.credits.credits(rec);
         let cny = self.cost_cny.unwrap_or(0.0) + billing.cost_cny(rec).unwrap_or(0.0);
         self.cost_cny = Some(cny);
+        if rec.failed || rec.retry || rec.duration_ms.is_some() {
+            self.status_seen += 1;
+        }
+        self.errors += rec.failed as u64;
+        self.retries += rec.retry as u64;
+        self.duration_ms += rec.duration_ms.unwrap_or(0);
     }
 
     pub fn cache_hit_rate(&self) -> Option<f64> {
@@ -106,8 +118,19 @@ pub struct SessionRow {
     pub session: String,
     pub title: Option<String>,
     pub first_ms: i64,
+    pub last_ms: i64,
     pub totals: Totals,
     pub models: Vec<String>,
+}
+
+impl SessionRow {
+    /// Output tokens per second of wall time, the honest speed number a
+    /// request log can give.
+    pub fn tps(&self) -> Option<f64> {
+        (self.totals.duration_ms > 0).then(|| {
+            self.totals.output as f64 / (self.totals.duration_ms as f64 / 1000.0)
+        })
+    }
 }
 
 /// One model's merged footprint, for the models table.
@@ -137,12 +160,19 @@ pub struct Ledger {
     pub calendar: (jiff::civil::Date, Vec<f64>),
     /// Credits per hour, the last `HOURLY_ROWS` days, newest last.
     pub hourly: Vec<(String, [f64; 24])>,
+    /// Tokens a session, on average.
+    pub avg_session_tokens: f64,
+    /// The newest `TPS_SESSIONS` sessions that report timing, oldest first:
+    /// a label and its output tokens per second.
+    pub recent_tps: Vec<(String, f64)>,
     pub models_rows: Vec<ModelRow>,
     pub sessions: Vec<SessionRow>,
 }
 
 /// Rows in the hour-by-day heatmap.
 const HOURLY_ROWS: usize = 14;
+/// Conversations in the speed chart.
+const TPS_SESSIONS: usize = 30;
 
 impl Ledger {
     pub fn build(records: &[UsageRecord], billing: &Billing) -> Self {
@@ -205,38 +235,29 @@ impl Ledger {
             })
             .collect();
         models_rows.sort_by(|a, b| b.totals.credits.total_cmp(&a.totals.credits));
-        // The calendar wants a count for every day, records or not.
+        // The calendar walks a trailing year, a count for every day,
+        // records or not — the GitHub shape.
         let zone = jiff::tz::TimeZone::system();
         let mut daily_total: BTreeMap<String, f64> = BTreeMap::new();
-        for (key, column) in &source_daily.series {
+        for column in source_daily.series.values() {
             for (ix, value) in column.iter().enumerate() {
                 *daily_total.entry(source_daily.days[ix].clone()).or_default() += value;
             }
-            let _ = key;
         }
-        let calendar = match source_daily.days.first() {
-            Some(first) => {
-                let start: jiff::civil::Date = first.parse().expect("a day key parses");
-                let today = jiff::Zoned::now().date();
-                let span = today
-                    .since(start)
-                    .expect("the first day is not in the future");
-                let count = span.get_days() as usize + 1;
-                let mut counts = vec![0.0; count];
-                for (day, value) in &daily_total {
-                    if let Ok(date) = day.parse::<jiff::civil::Date>() {
-                        if let Ok(offset) = date.since(start) {
-                            let ix = offset.get_days() as usize;
-                            if ix < count {
-                                counts[ix] = *value;
-                            }
-                        }
+        let today = jiff::Zoned::now().date();
+        let start = (jiff::Zoned::now() - jiff::SignedDuration::from_hours(24 * 364)).date();
+        let mut counts = vec![0.0; 365];
+        for (day, value) in &daily_total {
+            if let Ok(date) = day.parse::<jiff::civil::Date>() {
+                if let Ok(offset) = date.since(start) {
+                    let ix = offset.get_days() as usize;
+                    if ix < counts.len() {
+                        counts[ix] = *value;
                     }
                 }
-                (start, counts)
             }
-            None => (jiff::Zoned::now().date(), vec![0.0]),
-        };
+        }
+        let calendar = (start, counts);
         // The hour-by-day grid: credits in each hour of the last two weeks.
         let mut hourly: BTreeMap<String, [f64; 24]> = BTreeMap::new();
         let mut hourly_days: Vec<String> = Vec::new();
@@ -261,6 +282,33 @@ impl Ledger {
             .filter_map(|day| hourly.remove(&day).map(|row| (day, row)))
             .collect();
         let mut sessions = sessions(records, billing);
+        let avg_session_tokens = if sessions.is_empty() {
+            0.0
+        } else {
+            (totals.input_net + totals.cache_read + totals.output) as f64
+                / sessions.len() as f64
+        };
+        let mut timed: Vec<&SessionRow> = sessions
+            .iter()
+            .filter(|session| session.tps().is_some())
+            .collect();
+        timed.sort_by_key(|session| session.last_ms);
+        let recent_tps: Vec<(String, f64)> = timed
+            .into_iter()
+            .rev()
+            .take(TPS_SESSIONS)
+            .map(|session| {
+                let label = jiff::Timestamp::from_millisecond(session.last_ms)
+                    .map(|ts| {
+                        ts.to_zoned(zone.clone()).strftime("%m-%d %H:%M").to_string()
+                    })
+                    .unwrap_or_else(|_| session.session.clone());
+                (label, session.tps().unwrap_or_default())
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
         sessions.truncate(200);
         Self {
             totals,
@@ -272,6 +320,8 @@ impl Ledger {
             cumulative,
             calendar,
             hourly,
+            avg_session_tokens,
+            recent_tps,
             models_rows,
             sessions,
         }
@@ -288,10 +338,12 @@ pub fn sessions(records: &[UsageRecord], billing: &Billing) -> Vec<SessionRow> {
                 session: rec.session.clone(),
                 title: rec.session_title.clone(),
                 first_ms: rec.ts_ms,
+                last_ms: rec.ts_ms,
                 totals: Totals::default(),
                 models: Vec::new(),
             });
         entry.first_ms = entry.first_ms.min(rec.ts_ms);
+        entry.last_ms = entry.last_ms.max(rec.ts_ms);
         entry.totals.add(rec, billing);
         if !entry.models.contains(&rec.model_key) {
             entry.models.push(rec.model_key.clone());

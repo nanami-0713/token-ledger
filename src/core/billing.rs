@@ -187,6 +187,9 @@ mod tests {
             reasoning: 0,
             ttft_ms: None,
             agent: None,
+            failed: false,
+            retry: false,
+            duration_ms: None,
         }
     }
 

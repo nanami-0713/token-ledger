@@ -21,6 +21,12 @@ pub struct UsageRecord {
     pub reasoning: u64,
     pub ttft_ms: Option<u64>,
     pub agent: Option<String>,
+    /// The request ended in an error (sources without a status say false).
+    pub failed: bool,
+    /// The request ran again after a first attempt.
+    pub retry: bool,
+    /// Wall time the provider took, when the source records it.
+    pub duration_ms: Option<u64>,
 }
 
 impl UsageRecord {
