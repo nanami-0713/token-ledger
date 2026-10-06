@@ -27,6 +27,9 @@ fn main() -> anyhow::Result<()> {
 /// Print the whole ledger to stdout: the cross-GUI merge, proven on real data.
 fn smoke_main() -> anyhow::Result<()> {
     let config = Config::load();
+    if let Some(note) = &config.load_note {
+        println!("config: {note}");
+    }
     let billing = config.billing();
     let (records, statuses, extras) = sources::scan_all(&config);
     println!(
@@ -66,7 +69,7 @@ fn smoke_main() -> anyhow::Result<()> {
             "{:<28} {:>8} req {:>12} tok {:>10.1} cr  [{}]",
             model,
             all.requests,
-            all.input_net + all.cache_read + all.output,
+            all.tokens_total(),
             all.credits,
             by_source
                 .keys()
@@ -82,7 +85,7 @@ fn smoke_main() -> anyhow::Result<()> {
     println!(
         "\n== total == {} requests, {} tokens, {:.1} credits, cache hit {:.1}%",
         total.requests,
-        total.input_net + total.cache_read + total.output,
+        total.tokens_total(),
         total.credits,
         total.cache_hit_rate().unwrap_or(0.0) * 100.0
     );

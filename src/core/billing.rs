@@ -13,30 +13,66 @@ use super::record::UsageRecord;
 #[serde(deny_unknown_fields)]
 pub struct CreditConfig {
     /// Coefficients per 10k tokens, flash tier.
+    #[serde(default = "default_flash_in")]
     pub flash_in: f64,
+    #[serde(default = "default_flash_cache")]
     pub flash_cache: f64,
+    #[serde(default = "default_flash_out")]
     pub flash_out: f64,
     /// Coefficients per 10k tokens, every other model.
+    #[serde(default = "default_std_in")]
     pub std_in: f64,
+    #[serde(default = "default_std_cache")]
     pub std_cache: f64,
+    #[serde(default = "default_std_out")]
     pub std_out: f64,
+    #[serde(default = "default_divisor")]
     pub divisor: f64,
     /// Peak window is full price; outside it this factor applies.
+    #[serde(default = "default_offpeak_factor")]
     pub offpeak_factor: f64,
+}
+
+// One function per field so `config.toml` can override a single coefficient
+// without restating the rest; `Default` reads the same functions, so the
+// built-in formula lives in exactly one place.
+fn default_flash_in() -> f64 {
+    2.3
+}
+fn default_flash_cache() -> f64 {
+    0.56
+}
+fn default_flash_out() -> f64 {
+    8.0
+}
+fn default_std_in() -> f64 {
+    6.9
+}
+fn default_std_cache() -> f64 {
+    1.7
+}
+fn default_std_out() -> f64 {
+    24.0
+}
+fn default_divisor() -> f64 {
+    10_000.0
+}
+fn default_offpeak_factor() -> f64 {
+    0.5
 }
 
 impl Default for CreditConfig {
     fn default() -> Self {
         // The GLM Coding Plan formula, verified against zusage.sh.
         Self {
-            flash_in: 2.3,
-            flash_cache: 0.56,
-            flash_out: 8.0,
-            std_in: 6.9,
-            std_cache: 1.7,
-            std_out: 24.0,
-            divisor: 10_000.0,
-            offpeak_factor: 0.5,
+            flash_in: default_flash_in(),
+            flash_cache: default_flash_cache(),
+            flash_out: default_flash_out(),
+            std_in: default_std_in(),
+            std_cache: default_std_cache(),
+            std_out: default_std_out(),
+            divisor: default_divisor(),
+            offpeak_factor: default_offpeak_factor(),
         }
     }
 }
@@ -44,9 +80,11 @@ impl Default for CreditConfig {
 impl CreditConfig {
     fn peak(ts_ms: i64) -> bool {
         let shanghai = TimeZone::get("Asia/Shanghai").expect("a known zone");
-        let zoned = Timestamp::from_millisecond(ts_ms)
-            .expect("a time in range")
-            .to_zoned(shanghai);
+        let Ok(zoned) = Timestamp::from_millisecond(ts_ms).map(|ts| ts.to_zoned(shanghai)) else {
+            // A timestamp no calendar can hold claims no peak window; it
+            // bills at the discount instead of panicking the ledger.
+            return false;
+        };
         let weekday = zoned.weekday().to_monday_zero_offset();
         let (hour, minute) = (zoned.hour(), zoned.minute());
         weekday < 5 && (hour as f64 + minute as f64 / 60.0) >= 14.0 && hour < 18
@@ -238,5 +276,37 @@ mod tests {
         let at_peak = rec(peak.as_millisecond(), "glm-5.3", 10_000, 0, 10_000);
         let at_off = rec(off.as_millisecond(), "glm-5.3", 10_000, 0, 10_000);
         assert!((cfg.credits(&at_off) - cfg.credits(&at_peak) * 0.5).abs() < 1e-9);
+    }
+
+    // Anchor: 1_791_183_600_000 is Monday 2026-10-05 15:00 Asia/Shanghai;
+    // every boundary below is that Monday plus or minus whole hours.
+    #[test]
+    fn peak_window_boundaries() {
+        let monday_14_00 = 1_791_180_000_000;
+        let monday_13_59_59_999 = monday_14_00 - 1;
+        let monday_17_59 = 1_791_194_340_000;
+        let monday_18_00 = 1_791_194_400_000;
+        let friday_17_30 = 1_791_538_200_000;
+        let friday_18_30 = 1_791_541_800_000;
+        let saturday_15_00 = 1_791_615_600_000;
+        // The window is [14:00, 18:00) on weekdays only.
+        assert!(CreditConfig::peak(monday_14_00));
+        assert!(!CreditConfig::peak(monday_13_59_59_999));
+        assert!(CreditConfig::peak(monday_17_59));
+        assert!(!CreditConfig::peak(monday_18_00));
+        assert!(CreditConfig::peak(friday_17_30));
+        assert!(!CreditConfig::peak(friday_18_30));
+        assert!(!CreditConfig::peak(saturday_15_00));
+        // A timestamp no calendar holds claims no peak window.
+        assert!(!CreditConfig::peak(i64::MAX));
+    }
+
+    #[test]
+    fn partial_credits_config_keeps_other_defaults() {
+        // One coefficient in config.toml must not require the other seven.
+        let parsed: CreditConfig = toml::from_str("std_in = 3.45").expect("one coefficient is enough");
+        assert!((parsed.std_in - 3.45).abs() < 1e-9);
+        assert!((parsed.std_out - 24.0).abs() < 1e-9);
+        assert!((parsed.offpeak_factor - 0.5).abs() < 1e-9);
     }
 }

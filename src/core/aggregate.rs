@@ -35,8 +35,12 @@ impl Totals {
         self.output += rec.output;
         self.reasoning += rec.reasoning;
         self.credits += billing.credits.credits(rec);
-        let cny = self.cost_cny.unwrap_or(0.0) + billing.cost_cny(rec).unwrap_or(0.0);
-        self.cost_cny = Some(cny);
+        // The money ledger keeps `None` while no priced request has been
+        // seen, so "no price card" stays distinguishable from ¥0.
+        self.cost_cny = match (self.cost_cny, billing.cost_cny(rec)) {
+            (Some(a), Some(b)) => Some(a + b),
+            (a, b) => a.or(b),
+        };
         if rec.failed || rec.retry || rec.duration_ms.is_some() {
             self.status_seen += 1;
         }
@@ -46,8 +50,15 @@ impl Totals {
         self.tool_calls += rec.tool_calls;
     }
 
+    /// All five token kinds, the same count the README promises.
+    pub fn tokens_total(&self) -> u64 {
+        self.input_net + self.cache_read + self.cache_write + self.output + self.reasoning
+    }
+
     pub fn cache_hit_rate(&self) -> Option<f64> {
-        let gross = self.input_net + self.cache_read;
+        // Cache writes are prompt tokens too; leaving them out would flatter
+        // every source that bills them separately.
+        let gross = self.input_net + self.cache_read + self.cache_write;
         if gross == 0 {
             None
         } else {
@@ -56,13 +67,12 @@ impl Totals {
     }
 }
 
-/// A local calendar day, `YYYY-MM-DD` in the machine's zone.
+/// A local calendar day, `YYYY-MM-DD` in the machine's zone. A timestamp no
+/// calendar can hold lands in its own bucket rather than panicking.
 pub fn day_of(ts_ms: i64) -> String {
     Timestamp::from_millisecond(ts_ms)
-        .expect("a time in range")
-        .to_zoned(TimeZone::system())
-        .strftime("%Y-%m-%d")
-        .to_string()
+        .map(|ts| ts.to_zoned(TimeZone::system()).strftime("%Y-%m-%d").to_string())
+        .unwrap_or_else(|_| "unknown".into())
 }
 
 /// The day buckets every chart reads: day → group key → totals.
@@ -80,20 +90,20 @@ impl Daily {
         value: &str,
         billing: &Billing,
     ) -> Self {
+        // Format each record's day once; both loops below read this list.
+        let day_keys: Vec<String> = records.iter().map(|rec| day_of(rec.ts_ms)).collect();
         let mut days: Vec<String> = Vec::new();
         let mut seen: BTreeMap<String, bool> = BTreeMap::new();
-        for rec in records {
-            let day = day_of(rec.ts_ms);
+        for day in &day_keys {
             if seen.insert(day.clone(), true).is_none() {
-                days.push(day);
+                days.push(day.clone());
             }
         }
         days.sort();
         let mut totals: BTreeMap<(String, String), Totals> = BTreeMap::new();
-        for rec in records {
-            let day = day_of(rec.ts_ms);
+        for (rec, day) in records.iter().zip(&day_keys) {
             totals
-                .entry((group(rec), day))
+                .entry((group(rec), day.clone()))
                 .or_default()
                 .add(rec, billing);
         }
@@ -104,7 +114,7 @@ impl Daily {
             let cell = match value {
                 "credits" => total.credits,
                 "cny" => total.cost_cny.unwrap_or(0.0),
-                "tokens" => (total.input_net + total.cache_read + total.output) as f64,
+                "tokens" => total.tokens_total() as f64,
                 _ => total.requests as f64,
             };
             column[ix] += cell;
@@ -216,19 +226,21 @@ const TPS_SESSIONS: usize = 30;
 
 impl Ledger {
     pub fn build(records: &[UsageRecord], billing: &Billing, tool_ms: u64) -> Self {
+        // Each record's day, formatted once and read by every loop below
+        // (today's totals and the hourly grid) instead of re-formatting
+        // the same timestamp per pass.
+        let day_keys: Vec<String> = records.iter().map(|rec| day_of(rec.ts_ms)).collect();
         let mut totals = Totals::default();
         let today = jiff::Zoned::now().strftime("%Y-%m-%d").to_string();
         let today_ms = jiff::Zoned::now().timestamp().as_millisecond();
         let (mut today_credits, mut week_credits) = (0.0, 0.0);
         let (mut today_tokens, mut week_tokens) = (0.0, 0.0);
-        let tokens_of = |rec: &UsageRecord| {
-            (rec.input_net + rec.cache_read + rec.output) as f64
-        };
-        for rec in records {
+        let tokens_of = |rec: &UsageRecord| rec.tokens_total() as f64;
+        for (ix, rec) in records.iter().enumerate() {
             totals.add(rec, billing);
             let credits = billing.credits.credits(rec);
             let tokens = tokens_of(rec);
-            if day_of(rec.ts_ms) == today {
+            if day_keys[ix] == today {
                 today_credits += credits;
                 today_tokens += tokens;
             }
@@ -269,12 +281,20 @@ impl Ledger {
                     tps: None,
                 };
                 for totals in by_source.values() {
+                    // A complete merge: every field a row's consumers may
+                    // read, so a new column can never silently read 0.
                     row.totals.requests += totals.requests;
                     row.totals.input_net += totals.input_net;
                     row.totals.cache_read += totals.cache_read;
+                    row.totals.cache_write += totals.cache_write;
                     row.totals.output += totals.output;
+                    row.totals.reasoning += totals.reasoning;
                     row.totals.credits += totals.credits;
+                    row.totals.status_seen += totals.status_seen;
+                    row.totals.errors += totals.errors;
+                    row.totals.retries += totals.retries;
                     row.totals.duration_ms += totals.duration_ms;
+                    row.totals.tool_calls += totals.tool_calls;
                     row.totals.cost_cny = match (row.totals.cost_cny, totals.cost_cny) {
                         (Some(a), Some(b)) => Some(a + b),
                         (a, b) => a.or(b),
@@ -296,7 +316,6 @@ impl Ledger {
                 *daily_total.entry(source_daily.days[ix].clone()).or_default() += value;
             }
         }
-        let today = jiff::Zoned::now().date();
         let start = (jiff::Zoned::now() - jiff::SignedDuration::from_hours(24 * 364)).date();
         let mut counts = vec![0.0; 365];
         for (day, value) in &daily_total {
@@ -320,9 +339,8 @@ impl Ledger {
             hourly.entry(day.clone()).or_insert([0.0; 24]);
             hourly_days.push(day);
         }
-        for rec in records {
-            let day = day_of(rec.ts_ms);
-            if let Some(row) = hourly.get_mut(&day) {
+        for (ix, rec) in records.iter().enumerate() {
+            if let Some(row) = hourly.get_mut(&day_keys[ix]) {
                 if let Ok(zoned) = jiff::Timestamp::from_millisecond(rec.ts_ms) {
                     let hour = zoned.to_zoned(zone.clone()).hour() as usize;
                     row[hour] += tokens_of(rec);
@@ -337,8 +355,7 @@ impl Ledger {
         let avg_session_tokens = if sessions.is_empty() {
             0.0
         } else {
-            (totals.input_net + totals.cache_read + totals.output) as f64
-                / sessions.len() as f64
+            totals.tokens_total() as f64 / sessions.len() as f64
         };
         let mut timed: Vec<&SessionRow> = sessions
             .iter()
@@ -407,4 +424,85 @@ pub fn sessions(records: &[UsageRecord], billing: &Billing) -> Vec<SessionRow> {
     let mut rows: Vec<SessionRow> = by_key.into_values().collect();
     rows.sort_by(|a, b| b.totals.credits.total_cmp(&a.totals.credits));
     rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::billing::{Billing, CreditConfig, default_prices};
+
+    fn rec(model: &str) -> UsageRecord {
+        UsageRecord {
+            source: "test".into(),
+            session: "s".into(),
+            session_title: None,
+            provider: None,
+            model_raw: model.into(),
+            model_key: model.into(),
+            ts_ms: 0,
+            input_net: 1_000_000,
+            cache_read: 1_000_000,
+            cache_write: 1_000_000,
+            output: 1_000_000,
+            reasoning: 1_000_000,
+            ttft_ms: None,
+            agent: None,
+            failed: false,
+            retry: false,
+            duration_ms: None,
+            tool_calls: 0,
+        }
+    }
+
+    fn billing() -> Billing {
+        Billing {
+            credits: CreditConfig::default(),
+            prices: default_prices(),
+            usd_cny: 7.2,
+        }
+    }
+
+    #[test]
+    fn money_stays_none_until_a_priced_request() {
+        let b = billing();
+        let mut totals = Totals::default();
+        totals.add(&rec("no-price-card-for-this"), &b);
+        assert!(totals.cost_cny.is_none());
+        totals.add(&rec("glm-5.3"), &b);
+        assert!(totals.cost_cny.is_some());
+        // A later unpriced request must not zero the money answer out.
+        totals.add(&rec("no-price-card-for-this"), &b);
+        assert!(totals.cost_cny.unwrap() > 0.0);
+    }
+
+    #[test]
+    fn tokens_total_counts_all_five_kinds() {
+        let b = billing();
+        let mut totals = Totals::default();
+        totals.add(&rec("glm-5.3"), &b);
+        assert_eq!(totals.tokens_total(), 5_000_000);
+        // Cache writes are prompt tokens: one of three equal parts here.
+        assert!((totals.cache_hit_rate().unwrap() - 1.0 / 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn merged_model_rows_keep_every_field() {
+        let b = billing();
+        let mut one = rec("glm-5.3");
+        one.source = "one".into();
+        let mut two = rec("glm-5.3");
+        two.source = "two".into();
+        let ledger = Ledger::build(&[one, two], &b, 0);
+        let row = &ledger.models_rows[0];
+        assert_eq!(row.totals.requests, 2);
+        assert_eq!(row.totals.cache_write, 2_000_000);
+        assert_eq!(row.totals.reasoning, 2_000_000);
+        assert_eq!(row.totals.tokens_total(), 10_000_000);
+    }
+
+    #[test]
+    fn a_time_no_calendar_holds_lands_in_its_own_day_bucket() {
+        assert_eq!(day_of(i64::MAX), "unknown");
+        assert_ne!(day_of(1_791_183_600_000), "unknown");
+    }
 }

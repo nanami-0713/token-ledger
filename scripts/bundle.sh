@@ -13,7 +13,14 @@ cp target/release/token-ledger "$BUNDLE/Contents/MacOS/$APP"
 if [ -f "$ROOT/assets/icon.icns" ]; then
   cp "$ROOT/assets/icon.icns" "$BUNDLE/Contents/Resources/$APP.icns"
 fi
-cat > "$BUNDLE/Contents/Info.plist" <<'PLIST'
+# The version lives in Cargo.toml alone; the bundle reads it from there so
+# the two can never drift apart.
+VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+if [ -z "$VERSION" ]; then
+  echo "bundle.sh: no version found in Cargo.toml" >&2
+  exit 1
+fi
+cat > "$BUNDLE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -24,8 +31,8 @@ cat > "$BUNDLE/Contents/Info.plist" <<'PLIST'
     <key>CFBundleName</key><string>TokenLedger</string>
     <key>CFBundleDisplayName</key><string>TokenLedger</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.2.0</string>
-    <key>CFBundleVersion</key><string>0.2.0</string>
+    <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+    <key>CFBundleVersion</key><string>${VERSION}</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>NSHighResolutionCapable</key><true/>
@@ -35,7 +42,12 @@ cat > "$BUNDLE/Contents/Info.plist" <<'PLIST'
 PLIST
 # The linker signs the executable alone; a bundle wants its own ad-hoc
 # signature, or Finder and Gatekeeper argue about resources that aren't there.
-codesign --force --sign - "$BUNDLE" >/dev/null 2>&1 || true
+# A failed signing is a broken bundle (README promises ad-hoc signing), so it
+# fails the script instead of shipping an unsigned app quietly.
+if ! codesign --force --sign - "$BUNDLE" >/dev/null; then
+  echo "bundle.sh: codesign failed, the bundle is not signed" >&2
+  exit 1
+fi
 touch "$BUNDLE"
-echo "bundled: $BUNDLE"
+echo "bundled: $BUNDLE (v$VERSION)"
 echo "open it:  open $BUNDLE"

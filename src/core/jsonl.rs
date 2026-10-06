@@ -38,9 +38,14 @@ fn as_u64(value: Option<&Value>) -> u64 {
 }
 
 /// Epoch milliseconds from whatever the log wrote: epoch millis, epoch
-/// seconds, or an RFC 3339 string.
+/// micros, epoch seconds, or an RFC 3339 string.
 fn epoch_ms(value: &Value) -> anyhow::Result<i64> {
     if let Some(number) = value.as_f64() {
+        if number >= 1e14 {
+            // Microsecond epochs (~1.6-1.9e15) kept whole would sit far
+            // outside every calendar library's range.
+            return Ok((number / 1000.0) as i64);
+        }
         if number >= 1e11 {
             return Ok(number as i64);
         }
@@ -58,6 +63,17 @@ fn epoch_ms(value: &Value) -> anyhow::Result<i64> {
     bail!("time is neither number nor string")
 }
 
+/// A timestamp every downstream consumer (jiff, the day buckets, the peak
+/// window) can actually hold; anything else is garbage the record is
+/// dropped over, never a panic.
+pub fn ts_in_range(ts_ms: i64) -> bool {
+    jiff::Timestamp::from_millisecond(ts_ms).is_ok()
+}
+
+/// Beyond this many path components a `**` walk is chasing a symlink loop,
+/// not a log tree; real log trees nest a handful deep.
+const MAX_SCAN_DEPTH: usize = 32;
+
 pub fn scan_generic(query: JsonlQuery) -> anyhow::Result<Vec<UsageRecord>> {
     let mut records = Vec::new();
     let mut model_files = 0;
@@ -67,7 +83,19 @@ pub fn scan_generic(query: JsonlQuery) -> anyhow::Result<Vec<UsageRecord>> {
             .to_str()
             .with_context(|| format!("{pattern:?} is not UTF-8"))?;
         for entry in glob::glob(pattern).with_context(|| format!("bad glob {pattern}"))? {
-            let path = entry.with_context(|| "one glob entry failed")?;
+            // An unreadable directory fails the whole glob walk with one Err
+            // entry; the readable files around it still count.
+            let path = match entry {
+                Ok(path) => path,
+                Err(error) => {
+                    log::warn!("source {}: {error}", query.source_id);
+                    continue;
+                }
+            };
+            if path.components().count() > MAX_SCAN_DEPTH {
+                log::warn!("source {}: {path:?} nested too deep, skipped", query.source_id);
+                continue;
+            }
             model_files += 1;
             scan_file(&path, &query, &mut records);
         }
@@ -158,6 +186,10 @@ fn scan_file(path: &Path, query: &JsonlQuery, records: &mut Vec<UsageRecord>) {
         let Ok(ts_ms) = epoch_ms(time_value) else {
             continue;
         };
+        if !ts_in_range(ts_ms) {
+            log::warn!("source {}: {path:?}: time {ts_ms} out of range, line skipped", query.source_id);
+            continue;
+        }
         let (input, cache_read) = if query.input_includes_cache {
             let gross = as_u64(Some(in_value));
             let cached = as_u64(query.cache_read.and_then(|p| dig(&value, p)));
@@ -193,12 +225,9 @@ fn scan_file(path: &Path, query: &JsonlQuery, records: &mut Vec<UsageRecord>) {
 
 /// DeepSeek Harness: `~/.dsh/sessions/<workdir-slug>/session-<uuid>/session.jsonl.zstd`,
 /// usage riding on `data.chunk.usage` chunks, the model stated per turn.
-pub fn scan_dsh(root: &Path, ctx: &super::sources::ScanCtx) -> (Vec<UsageRecord>, usize) {
+pub fn scan_dsh(root: &Path, ctx: &super::sources::ScanCtx) -> Vec<UsageRecord> {
     // <workdir-slug>/session-<uuid>/session.jsonl.zstd under the root.
     let paths = [format!("{}/%/session-*/session.jsonl.zstd", root.display()).replace('%', "*")];
-    let files = glob::glob(&paths[0])
-        .map(|entries| entries.filter_map(Result::ok).count())
-        .unwrap_or(0);
     let query = JsonlQuery {
         source_id: "dsh",
         paths: &paths,
@@ -214,10 +243,38 @@ pub fn scan_dsh(root: &Path, ctx: &super::sources::ScanCtx) -> (Vec<UsageRecord>
         aliases: &ctx.aliases,
     };
     match scan_generic(query) {
-        Ok(found) => (found, files),
+        Ok(found) => found,
         Err(error) => {
             log::warn!("source dsh: {error:#}");
-            (Vec::new(), files)
+            Vec::new()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn epoch_units_are_recognized() {
+        let as_ms = |value: i64| epoch_ms(&serde_json::json!(value)).expect("parses");
+        // Milliseconds, the ledger's own unit.
+        assert_eq!(as_ms(1_791_183_600_000), 1_791_183_600_000);
+        // Seconds.
+        assert_eq!(as_ms(1_791_183_600), 1_791_183_600_000);
+        // Microseconds, as one DSH-style log once wrote them.
+        assert_eq!(as_ms(1_759_000_000_000_000_i64), 1_759_000_000_000);
+        // Not an epoch at all.
+        assert!(epoch_ms(&serde_json::json!(42)).is_err());
+    }
+
+    #[test]
+    fn out_of_range_timestamps_are_garbage_not_panics() {
+        let as_ms = |value: i64| epoch_ms(&serde_json::json!(value)).expect("parses");
+        assert!(ts_in_range(as_ms(1_791_183_600_000)));
+        assert!(!ts_in_range(i64::MAX));
+        assert!(!ts_in_range(i64::MIN));
+        // The microsecond tier must land inside the range it converts to.
+        assert!(ts_in_range(as_ms(1_759_000_000_000_000_i64)));
     }
 }

@@ -11,8 +11,12 @@ use super::record::{normalize_model, UsageRecord};
 /// code; the user's `config.toml` overrides them by id and adds new ones, so
 /// any CLI or GUI that writes JSONL logs can join the ledger without a
 /// release.
+// No `deny_unknown_fields` here or on `SourceDef`: through `#[serde(flatten)]`
+// an internally-tagged enum cannot tell its own `kind` from a stray key and
+// rejects every table with "unknown field `kind`". Required fields still
+// error; typos in optional fields are the accepted cost.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "lowercase")]
 pub enum SourceKind {
     Zcode {
         #[serde(default = "default_zcode_db")]
@@ -56,7 +60,6 @@ fn default_true() -> bool {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct SourceDef {
     pub id: String,
     pub label: String,
@@ -79,6 +82,10 @@ pub struct Config {
     pub prices: BTreeMap<String, Price>,
     #[serde(default)]
     pub fx_usd_cny: Option<f64>,
+    /// Why the config file was ignored, if it was; shown on the Sources
+    /// page so a typo does not silently reset the whole ledger.
+    #[serde(skip)]
+    pub load_note: Option<String>,
 }
 
 impl Config {
@@ -140,14 +147,24 @@ impl Config {
     }
 
     /// Load `~/.config/token-ledger/config.toml` over the built-ins: same-id
-    /// definitions replace, new ids append.
+    /// definitions replace, new ids append. A file that fails to parse is
+    /// dropped whole — with the reason kept in `load_note`, on stderr and on
+    /// the Sources page, instead of vanishing.
     pub fn load() -> Self {
         let mut config = Self::default();
         let path = config_path();
         if let Ok(text) = std::fs::read_to_string(&path) {
             match toml::from_str::<Config>(&text) {
                 Ok(user) => config = user,
-                Err(error) => log::warn!("config: {path:?} failed to parse: {error}"),
+                Err(error) => {
+                    let note = format!(
+                        "{} ignored, built-in defaults in effect — {error}",
+                        path.display()
+                    );
+                    log::warn!("config: {note}");
+                    eprintln!("token-ledger: config: {note}");
+                    config.load_note = Some(note);
+                }
             }
         }
         let mut sources = Self::builtin();
@@ -229,6 +246,7 @@ pub fn scan_all(config: &Config) -> (Vec<UsageRecord>, Vec<SourceStatus>, ScanEx
     };
     let mut records = Vec::new();
     let mut statuses = Vec::new();
+    let mut extras = ScanExtras::default();
     for def in &config.source {
         if !def.enabled {
             statuses.push(SourceStatus {
@@ -243,7 +261,7 @@ pub fn scan_all(config: &Config) -> (Vec<UsageRecord>, Vec<SourceStatus>, ScanEx
         }
         let outcome = scan_source(def, &ctx);
         let (found, detail) = match &outcome {
-            Ok(found) => (found.len(), detail_for(def, found)),
+            Ok((found, _)) => (found.len(), detail_for(def, found)),
             Err(error) => (0, format!("{error:#}")),
         };
         statuses.push(SourceStatus {
@@ -254,19 +272,12 @@ pub fn scan_all(config: &Config) -> (Vec<UsageRecord>, Vec<SourceStatus>, ScanEx
             records: found,
             detail,
         });
-        if let Ok(found) = outcome {
+        if let Ok((found, tool_ms)) = outcome {
             records.extend(found);
+            extras.tool_ms += tool_ms;
         }
     }
     records.sort_by_key(|rec| rec.ts_ms);
-    let mut extras = ScanExtras::default();
-    for def in &config.source {
-        if let (true, SourceKind::Zcode { db }) = (def.enabled, &def.kind) {
-            if let Ok((_, ms)) = super::zcode::tool_stats(&expand_tilde(db)) {
-                extras.tool_ms += ms;
-            }
-        }
-    }
     (records, statuses, extras)
 }
 
@@ -395,10 +406,49 @@ fn detail_for(def: &SourceDef, found: &[UsageRecord]) -> String {
     }
 }
 
-fn scan_source(def: &SourceDef, ctx: &ScanCtx) -> anyhow::Result<Vec<UsageRecord>> {
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The shape a real user's config.toml takes: one coefficient touched,
+    /// one extra source added. Both must parse.
+    #[test]
+    fn partial_credits_and_sources_parse() {
+        let text = r#"
+[credits]
+std_in = 3.45
+
+[[source]]
+id = "extra"
+label = "Extra logs"
+kind = "jsonl"
+paths = ["~/logs/**/*.jsonl"]
+time = "timestamp"
+input = "usage.input_tokens"
+output = "usage.output_tokens"
+"#;
+        let config: Config = toml::from_str(text).expect("the whole config parses");
+        let credits = config.credits.expect("credits present");
+        assert!((credits.std_in - 3.45).abs() < 1e-9);
+        assert!((credits.std_out - 24.0).abs() < 1e-9);
+        assert_eq!(config.source.len(), 1);
+        assert_eq!(config.source[0].id, "extra");
+        assert!(config.load_note.is_none());
+    }
+
+    #[test]
+    fn a_typo_at_the_top_level_is_an_error_not_a_silence() {
+        let parsed = toml::from_str::<Config>("[creditz]\nstd_in = 1.0\n");
+        assert!(parsed.is_err());
+    }
+}
+
+/// One source's records, plus the tool wall time that rides the same
+/// database (ZCode today): when a scan fails, its tool time goes with it.
+fn scan_source(def: &SourceDef, ctx: &ScanCtx) -> anyhow::Result<(Vec<UsageRecord>, u64)> {
     match &def.kind {
         SourceKind::Zcode { db } => super::zcode::scan(&expand_tilde(db), ctx),
-        SourceKind::Dsh { root } => Ok(super::jsonl::scan_dsh(&expand_tilde(root), ctx).0),
+        SourceKind::Dsh { root } => Ok((super::jsonl::scan_dsh(&expand_tilde(root), ctx), 0)),
         SourceKind::Jsonl {
             paths,
             zstd,
@@ -423,6 +473,7 @@ fn scan_source(def: &SourceDef, ctx: &ScanCtx) -> anyhow::Result<Vec<UsageRecord
             cache_read: cache_read.as_deref(),
             cache_write: cache_write.as_deref(),
             aliases: &ctx.aliases,
-        }),
+        })
+        .map(|records| (records, 0)),
     }
 }

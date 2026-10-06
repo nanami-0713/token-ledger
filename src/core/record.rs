@@ -36,6 +36,12 @@ impl UsageRecord {
     pub fn input_gross(&self) -> u64 {
         self.input_net + self.cache_read
     }
+
+    /// All five token kinds the ledger promises, each counted once: fresh
+    /// input, cache reads, cache writes, output and reasoning.
+    pub fn tokens_total(&self) -> u64 {
+        self.input_net + self.cache_read + self.cache_write + self.output + self.reasoning
+    }
 }
 
 /// Strip a provider prefix (`anthropic/`, `bigmodel/`), a date-like release
@@ -109,6 +115,27 @@ mod tests {
         assert_eq!(
             normalize_model("claude-sonnet-4-5-20250929", &aliases),
             "claude-sonnet-4-5"
+        );
+    }
+
+    #[test]
+    fn aliases_apply_after_prefix_and_suffix_cleanup() {
+        // The alias table speaks in cleaned keys, so every spelling of the
+        // same model — prefixed, dated, differently cased — maps alike.
+        let aliases = BTreeMap::from([
+            ("glm-5.3".to_string(), "glm-5.x".to_string()),
+            ("claude-sonnet-4-5".to_string(), "sonnet".to_string()),
+        ]);
+        assert_eq!(normalize_model("GLM-5.3", &aliases), "glm-5.x");
+        assert_eq!(normalize_model("bigmodel/glm-5.3", &aliases), "glm-5.x");
+        assert_eq!(
+            normalize_model("anthropic/claude-sonnet-4-5-20250929", &aliases),
+            "sonnet"
+        );
+        // A dated spelling with a suffix after the date folds first.
+        assert_eq!(
+            normalize_model("claude-sonnet-4-5-20250929-highspeed", &aliases),
+            "sonnet"
         );
     }
 }
