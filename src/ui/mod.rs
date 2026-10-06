@@ -18,12 +18,28 @@ use crate::core::billing::Billing;
 use crate::core::record::UsageRecord;
 use crate::core::sources::{self, Config, ScanExtras, SourceStatus};
 
-actions!(ledger, [Quit]);
+actions!(
+    ledger,
+    [
+        Quit,
+        Rescan,
+        ToggleTheme,
+        PageOverview,
+        PageModels,
+        PageSessions,
+        PageSources,
+    ]
+);
 
 /// How far the sidebar's edge may be dragged, in px. The floor keeps the
 /// nav legible; the ceiling keeps the charts more than half the window.
 const SIDEBAR_MIN: f32 = 200.0;
 const SIDEBAR_MAX: f32 = 480.0;
+
+/// The window refreshes itself on this cadence. A scan is a full re-read,
+/// but it runs off-thread now, so the price is a few seconds of background
+/// IO and numbers that are never stale for long.
+const AUTO_REFRESH_SECS: u64 = 60;
 
 /// Drag marker for the sidebar's resize strip; the width itself rides the
 /// mouse in `on_drag_move`.
@@ -74,6 +90,10 @@ pub struct LedgerApp {
     pub dark: bool,
     /// The sidebar's width, dragged along its right edge.
     pub sidebar_w: Pixels,
+    /// Set while a scan runs off-thread; pages stand in for a placeholder.
+    pub scanning: bool,
+    /// A rescan was asked for mid-scan; it runs when the current one lands.
+    pub pending_rescan: bool,
     pub scanned_at: String,
     /// What the last Add-a-folder probe decided, shown on the Sources page.
     pub folder_note: Option<String>,
@@ -83,17 +103,17 @@ impl LedgerApp {
     fn with(page: usize, dark: bool, cx: &mut Context<Self>) -> Self {
         let config = Config::load();
         let billing = config.billing();
-        let (records, statuses, extras) = sources::scan_all(&config);
-        let ledger = Ledger::build(&records, &billing, extras.tool_ms);
-        let mut app = Self {
+        let app = Self {
             config,
             billing,
-            span_ledger: ledger.clone(),
-            ledger,
+            // The first scan runs off-thread; the window shows a placeholder
+            // until `apply_scan` lands the real ledgers.
+            ledger: Ledger::default(),
+            span_ledger: Ledger::default(),
             span: Span::All,
-            records,
-            extras,
-            statuses,
+            records: Vec::new(),
+            extras: ScanExtras::default(),
+            statuses: Vec::new(),
             page: match page {
                 1 => Page::Models,
                 2 => Page::Sessions,
@@ -102,34 +122,121 @@ impl LedgerApp {
             },
             dark: dark || cx.theme().mode() == Mode::Dark,
             sidebar_w: px(224.),
-            scanned_at: now_text(),
+            scanning: true,
+            pending_rescan: false,
+            // Empty until the first scan lands: the placeholder, not a
+            // timestamp, says what is going on.
+            scanned_at: String::new(),
             folder_note: None,
         };
         app.apply_mode(cx);
+        app.scan_in_background(cx);
         app
     }
 
+    /// One full scan on the background executor; `apply_scan` lands the
+    /// outcome back on the entity. Inputs are captured up front, so a
+    /// config edit mid-scan cannot bleed into a running scan.
+    fn scan_in_background(&self, cx: &Context<Self>) {
+        let config = self.config.clone();
+        let billing = self.config.billing();
+        cx.spawn(
+            async move |this: gpui::WeakEntity<LedgerApp>, cx: &mut gpui::AsyncApp| {
+                let outcome = cx
+                    .background_spawn(async move {
+                        let (records, statuses, extras) = sources::scan_all(&config);
+                        let ledger = Ledger::build(&records, &billing, extras.tool_ms);
+                        (records, statuses, extras, ledger)
+                    })
+                    .await;
+                this.update(cx, |app, cx| app.apply_scan(outcome, cx)).ok();
+            },
+        )
+        .detach();
+    }
+
+    /// One timer in flight at any moment: every scan's landing schedules the
+    /// next, so refreshes never pile up and the chain never breaks.
+    fn schedule_auto_refresh(&self, cx: &Context<Self>) {
+        cx.spawn(
+            async move |this: gpui::WeakEntity<LedgerApp>, cx: &mut gpui::AsyncApp| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(AUTO_REFRESH_SECS))
+                    .await;
+                this.update(cx, |app, cx| {
+                    // If a scan is already in flight, it lands through
+                    // `apply_scan`, which schedules the next timer itself.
+                    if !app.scanning {
+                        app.rescan(cx);
+                    }
+                })
+                .ok();
+            },
+        )
+        .detach();
+    }
+
     pub fn rescan(&mut self, cx: &mut Context<Self>) {
+        if self.scanning {
+            // A scan is in flight; remember the press and run one more
+            // round when it lands, so toggles made mid-scan are not lost.
+            self.pending_rescan = true;
+            cx.notify();
+            return;
+        }
+        self.scanning = true;
+        cx.notify();
+        self.scan_in_background(cx);
+    }
+
+    /// Land one scan's outcome: the assignments of the old synchronous
+    /// rescan, in their old order, plus the end-of-scan bookkeeping.
+    fn apply_scan(
+        &mut self,
+        (records, statuses, extras, ledger): (
+            Vec<UsageRecord>,
+            Vec<SourceStatus>,
+            ScanExtras,
+            Ledger,
+        ),
+        cx: &mut Context<Self>,
+    ) {
         self.billing = self.config.billing();
-        let (records, statuses, extras) = sources::scan_all(&self.config);
         self.records = records;
         self.extras = extras;
-        self.ledger = Ledger::build(&self.records, &self.billing, extras.tool_ms);
+        self.ledger = ledger;
         self.refresh_span();
         self.statuses = statuses;
         self.scanned_at = now_text();
+        self.scanning = false;
+        if self.pending_rescan {
+            self.pending_rescan = false;
+            // The follow-up scan's own landing reschedules the timer.
+            self.rescan(cx);
+        } else {
+            self.schedule_auto_refresh(cx);
+        }
         cx.notify();
     }
 
     /// Rebuild the windowed ledger after a span change or a rescan.
     pub fn refresh_span(&mut self) {
         let now = jiff::Zoned::now().timestamp().as_millisecond();
-        let cutoff = self.span.cutoff_ms(now);
-        let scoped: Vec<UsageRecord> = match cutoff {
-            Some(cutoff) => self.records.iter().filter(|r| r.ts_ms >= cutoff).cloned().collect(),
-            None => self.records.clone(),
-        };
-        self.span_ledger = Ledger::build(&scoped, &self.billing, self.extras.tool_ms);
+        match self.span.cutoff_ms(now) {
+            Some(cutoff) => {
+                let scoped: Vec<UsageRecord> = self
+                    .records
+                    .iter()
+                    .filter(|r| r.ts_ms >= cutoff)
+                    .cloned()
+                    .collect();
+                self.span_ledger = Ledger::build(&scoped, &self.billing, self.extras.tool_ms);
+            }
+            // The all-history view is the main ledger itself — the same
+            // records, billing and tool time already built into it — so
+            // clone that instead of re-walking every record a second time.
+            None => self.span_ledger = self.ledger.clone(),
+        }
     }
 
     pub fn set_span(&mut self, span: Span, cx: &mut Context<Self>) {
@@ -302,7 +409,11 @@ impl Render for LedgerApp {
                     .px_2()
                     .text_size(gpui::rems(0.75))
                     .text_color(colors.fg_muted)
-                    .child(format!("scanned at {}", self.scanned_at)),
+                    .child(if self.scanning {
+                        "scanning…".to_string()
+                    } else {
+                        format!("scanned at {}", self.scanned_at)
+                    }),
             );
         // The strip straddles the sidebar's right border; dragging it moves
         // the border, clamped, and the cursor talks east-west over it.
@@ -335,11 +446,34 @@ impl Render for LedgerApp {
                         }
                     }),
             );
-        let content = match self.page {
-            Page::Overview => overview::render(self, window, cx),
-            Page::Models => models::render(self, window, cx),
-            Page::Sessions => sessions::render(self, window, cx),
-            Page::Sources => sources_page::render(self, window, cx),
+        let content = if self.scanning {
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .size_full()
+                .gap_2()
+                .child(
+                    div()
+                        .text_size(gpui::rems(1.25))
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .text_color(colors.fg)
+                        .child("Reading logs…"),
+                )
+                .child(
+                    div()
+                        .text_size(gpui::rems(0.8))
+                        .text_color(colors.fg_muted)
+                        .child("every model call, one ledger"),
+                )
+        } else {
+            match self.page {
+                Page::Overview => overview::render(self, window, cx),
+                Page::Models => models::render(self, window, cx),
+                Page::Sessions => sessions::render(self, window, cx),
+                Page::Sources => sources_page::render(self, window, cx),
+            }
         };
         div()
             .id("root")
@@ -347,6 +481,32 @@ impl Render for LedgerApp {
             .size_full()
             .bg(colors.bg)
             .text_color(colors.fg)
+            // Page-switching and scan/theme keys, handled at the root so
+            // they reach the app no matter where focus sits.
+            .on_action(cx.listener(|app, _: &PageOverview, _, cx| {
+                app.page = Page::Overview;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|app, _: &PageModels, _, cx| {
+                app.page = Page::Models;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|app, _: &PageSessions, _, cx| {
+                app.page = Page::Sessions;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|app, _: &PageSources, _, cx| {
+                app.page = Page::Sources;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|app, _: &Rescan, _, cx| {
+                app.rescan(cx);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|app, _: &ToggleTheme, _, cx| {
+                app.toggle_theme(cx);
+                cx.notify();
+            }))
             .child(sidebar)
             .child(
                 div()
@@ -354,7 +514,7 @@ impl Render for LedgerApp {
                     .flex_1()
                     .min_w_0()
                     .h_full()
-                    .overflow_y_scroll()
+                    .overflow_scroll()
                     .p_8()
                     .child(content),
             )
@@ -366,7 +526,15 @@ pub fn run(page: usize, dark: bool) -> anyhow::Result<()> {
         .with_assets(Assets)
         .run(move |cx: &mut App| {
             ely_gpui_component::init(cx);
-            cx.bind_keys([gpui::KeyBinding::new("cmd-q", Quit, None)]);
+            cx.bind_keys([
+                gpui::KeyBinding::new("cmd-q", Quit, None),
+                gpui::KeyBinding::new("cmd-1", PageOverview, None),
+                gpui::KeyBinding::new("cmd-2", PageModels, None),
+                gpui::KeyBinding::new("cmd-3", PageSessions, None),
+                gpui::KeyBinding::new("cmd-4", PageSources, None),
+                gpui::KeyBinding::new("cmd-r", Rescan, None),
+                gpui::KeyBinding::new("cmd-d", ToggleTheme, None),
+            ]);
             cx.on_action(|_: &Quit, cx| cx.quit());
             let bounds = gpui::Bounds::centered(None, size(px(1320.0), px(860.0)), cx);
             let options = WindowOptions {

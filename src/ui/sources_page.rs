@@ -71,6 +71,18 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
         .flex_col()
         .gap_2()
         .max_w(px(880.))
+        .children(app.config.load_note.clone().map(|note| {
+            div()
+                .mb_2()
+                .p_3()
+                .rounded(theme.radius(ely_gpui_component::theme::Radius::Md))
+                .border_1()
+                .border_color(theme.colors.warning)
+                .bg(theme.colors.warning_subtle)
+                .text_size(rems(0.85))
+                .text_color(theme.colors.fg)
+                .child(note)
+        }))
         .child(
             div()
                 .text_size(rems(0.9))

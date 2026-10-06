@@ -48,7 +48,7 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
         .models_rows
         .iter()
         .map(|row| {
-            let tokens = row.totals.input_net + row.totals.cache_read + row.totals.output;
+            let tokens = row.totals.tokens_total();
             Row::new(
                 row.model.clone(),
                 [
@@ -84,6 +84,9 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
         .flex()
         .flex_col()
         .gap_6()
+        // Direct child of the scroll container: 980px floor keeps the
+        // charts readable in a narrow window, 1080 caps the line length.
+        .min_w(px(980.))
         .max_w(px(1080.))
         .child(
             div()
@@ -100,9 +103,9 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
                 .child(windows),
         )
         .child(section_title("Tokens per day, stacked", theme.colors.fg_muted)
-            .child(div().w(px(980.)).child(stacked)))
+            .child(div().w_full().child(stacked)))
         .child(section_title("Speed: output tokens a second, by model", theme.colors.fg_muted)
-            .child(div().w(px(980.)).child(
+            .child(div().w_full().child(
                 BarChart::new("models-tps", names(&timed))
                     .series(Series::new(
                         "tokens/s",
@@ -112,7 +115,7 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
                     .format(|value| format!("{value:.0}")),
             )))
         .child(section_title("Cache hit, by model", theme.colors.fg_muted)
-            .child(div().w(px(980.)).child(
+            .child(div().w_full().child(
                 BarChart::new("models-cache", names(&cached))
                     .series(Series::new(
                         "cache hit %",
@@ -125,7 +128,7 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
                     .format(|value| format!("{value:.0}%")),
             )))
         .child(section_title("API list price, by model", theme.colors.fg_muted)
-            .child(div().w(px(980.)).child(
+            .child(div().w_full().child(
                 BarChart::new("models-cost", names(&priced))
                     .series(Series::new(
                         "¥ list",
@@ -137,7 +140,7 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
                     .horizontal()
                     .format(|value| format!("¥{value:.0}")),
             )))
-        .child(div().w(px(1080.)).child(
+        .child(div().w_full().child(
             DataTable::new(
                 "models-table",
                 [

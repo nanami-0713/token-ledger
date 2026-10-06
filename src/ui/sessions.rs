@@ -24,7 +24,7 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
                 .title
                 .clone()
                 .unwrap_or_else(|| session.session.clone());
-            let tokens = session.totals.input_net + session.totals.cache_read + session.totals.output;
+            let tokens = session.totals.tokens_total();
             let when = jiff::Timestamp::from_millisecond(session.first_ms)
                 .map(|ts| {
                     ts.to_zoned(jiff::tz::TimeZone::system())

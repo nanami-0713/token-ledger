@@ -147,17 +147,21 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
         .flex()
         .flex_col()
         .gap_6()
+        // The min-width lives on this direct child of the scroll container:
+        // below it the page stays 980px wide and scrolls sideways instead of
+        // squeezing the charts; above it, 1080 still caps the line length.
+        .min_w(px(980.))
         .max_w(px(1080.))
         .child(grid)
         .child(section(
             "Tokens per day, by source",
             theme.colors.fg_muted,
-            div().w(px(980.)).child(by_source_chart(ledger)),
+            div().w_full().child(by_source_chart(ledger)),
         ))
         .child(section(
             "The last thirty conversations, tokens a second",
             theme.colors.fg_muted,
-            div().w(px(1080.)).child(
+            div().w_full().child(
                 BarChart::new(
                     "recent-tps",
                     ledger
@@ -176,7 +180,7 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
         .child(section(
             "Cumulative tokens",
             theme.colors.fg_muted,
-            div().w(px(980.)).child(
+            div().w_full().child(
                 LineChart::new("cumulative", ledger.days.clone())
                     .series(Series::new("all sources", ledger.cumulative.clone()))
                     .format(|value| human_f64(value)),
@@ -185,7 +189,7 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
         .child(section(
             "A year of tokens, a tile a day",
             theme.colors.fg_muted,
-            div().w(px(980.)).child(
+            div().w_full().child(
                 CalendarHeatmap::new("calendar", ledger.calendar.0, ledger.calendar.1.clone())
                     .format(|value| format!("{} tokens", human_f64(value))),
             ),
@@ -193,18 +197,20 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
         .child(section(
             "When the tokens burn: the last two weeks, hour by hour",
             theme.colors.fg_muted,
-            div().w(px(980.)).child(hourly_chart(ledger)),
+            div().w_full().child(hourly_chart(ledger)),
         ))
         .child(section(
             "Where the tokens go",
             theme.colors.fg_muted,
-            div().w(px(680.)).child(
-                BarChart::new("token-mix", ["Cache reads", "Fresh input", "Output"])
+            div().w_full().child(
+                BarChart::new("token-mix", ["Cache reads", "Cache writes", "Fresh input", "Reasoning", "Output"])
                     .series(Series::new(
                         "Tokens",
                         vec![
                             ledger.totals.cache_read as f64,
+                            ledger.totals.cache_write as f64,
                             ledger.totals.input_net as f64,
+                            ledger.totals.reasoning as f64,
                             ledger.totals.output as f64,
                         ],
                     ))
@@ -220,13 +226,13 @@ pub fn render(app: &mut LedgerApp, _window: &mut Window, cx: &mut Context<Ledger
                     "{} days on record · cache {} of {} prompt tokens · {:.1}M output tokens · API list price ¥{} (priced models)",
                     ledger.days.len(),
                     human_tokens(ledger.totals.cache_read),
-                    human_tokens(ledger.totals.cache_read + ledger.totals.input_net),
+                    human_tokens(ledger.totals.cache_read + ledger.totals.input_net + ledger.totals.cache_write),
                     ledger.totals.output as f64 / 1e6,
                     ledger
                         .totals
                         .cost_cny
                         .map(|cny| format!("{cny:.0}"))
-                        .unwrap_or_else(|| "0".into()),
+                        .unwrap_or_else(|| "no card".into()),
                 )),
         )
 }
