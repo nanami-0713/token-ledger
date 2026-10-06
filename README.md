@@ -24,6 +24,15 @@ Three ledgers side by side, on every view:
   BigModel's published GLM prices built in; a model without a card shows
   tokens only, never a guess.
 
+## No network, ever
+
+TokenLedger is a reader, nothing else. It opens your tools' log files and
+SQLite databases **read-only** — it cannot write, rename or delete the logs
+it measures — executes no scripts, sends no telemetry, checks for no
+updates, and holds no accounts. Its own code contains no network calls at
+all: everything it knows stays on this machine, and the only file it ever
+reads on your behalf is the one you point it at.
+
 ## Run it
 
 **Download** — grab `TokenLedger-…-macos-applesilicon.zip` from
@@ -43,6 +52,10 @@ open dist/TokenLedger.app  # own Dock presence, double-clickable, no terminal
 ```
 
 No full Xcode needed; gpui compiles its Metal shaders at runtime.
+
+In the window: **⌘1–⌘4** switch pages, **⌘R** rescans, **⌘D** flips the
+theme. The window also rescans itself every minute, off the main thread, so
+the numbers follow your sessions without a keypress.
 
 ## Data sources
 
@@ -84,9 +97,9 @@ The same file carries the rest of the ledger:
 [aliases]                     # spellings of one model, onto one key
 kimi-k3 = "k3"
 
-[credits]                     # plan formula, per 10k tokens
-flash_in = 2.3
-flash_cache = 0.56
+[credits]                     # plan formula, per 10k tokens — any one
+flash_in = 2.3                # coefficient alone is enough; the rest keep
+flash_cache = 0.56            # these defaults
 flash_out = 8.0
 std_in = 6.9
 std_cache = 1.7
@@ -143,8 +156,9 @@ at a different path or turned off (`enabled = false`).
   spellings get their own bucket until an alias maps them.
 - ZCode's `input_tokens` is gross (cache reads inside); the ledger stores
   fresh input and cache reads separately for every source.
-- A scan is a full re-read; press Rescan after heavy sessions. (Watching
-  files live is on the way.)
+- A scan is a full re-read, but it runs off the main thread and repeats
+  itself every minute; ⌘R forces one right now. A config file that fails
+  to parse says so on the Sources page instead of silently resetting.
 
 Built with [Ely GPUI Components](https://github.com/ZacharyZhang-NY/Ely-GPUI-Components).
 MIT or Apache-2.0, at your option.
